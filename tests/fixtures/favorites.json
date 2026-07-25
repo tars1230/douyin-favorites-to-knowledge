@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "aweme_id": "7000000000000000001",
+      "title": "Synthetic workflow note",
+      "author": "Fixture Creator",
+      "description": "A synthetic item used only for deterministic tests.",
+      "transcript": "Collect public evidence, review it, and promote only the approved note.",
+      "tags": ["workflow", "fixture"],
+      "observed_at": "2026-07-25T00:00:00+00:00",
+      "source_url": "https://example.invalid/private-query-is-ignored?token=not-copied"
+    },
+    {
+      "aweme_id": "7000000000000000002",
+      "title": "Synthetic quality gate",
+      "author": "Fixture Creator",
+      "description": "A second synthetic item for idempotency checks.",
+      "transcript": "The transaction uses a review hash and an explicit approval artifact.",
+      "tags": ["quality", "fixture"],
+      "observed_at": "2026-07-25T00:01:00+00:00"
+    }
+  ]
+}

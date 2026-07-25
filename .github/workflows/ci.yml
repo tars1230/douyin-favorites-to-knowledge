@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile
+        run: python -m compileall -q src tests
+      - name: Unit and fixture E2E
+        run: PYTHONPATH=src python -m unittest discover -s tests -v
+      - name: Clean install
+        run: |
+          python -m venv /tmp/dftk-venv
+          /tmp/dftk-venv/bin/pip install .
+          /tmp/dftk-venv/bin/douyin-favorites-knowledge --help
+          /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json scan --input tests/fixtures/favorites.json --source-label ci_fixture --review .runtime/review.json
+          /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json review --review .runtime/review.json --approve-all --approval .runtime/approval.json
+          /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json promote --review .runtime/review.json --approval .runtime/approval.json --dry-run
+          /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json promote --review .runtime/review.json --approval .runtime/approval.json

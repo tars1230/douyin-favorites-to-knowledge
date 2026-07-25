@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "knowledge_dir": "../.runtime/knowledge",
+  "ledger_path": "../.runtime/state/ledger.sqlite3"
+}

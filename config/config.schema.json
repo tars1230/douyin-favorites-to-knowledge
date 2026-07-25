@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "douyin-favorites-to-knowledge config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "knowledge_dir", "ledger_path"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "knowledge_dir": {"type": "string", "minLength": 1},
+    "ledger_path": {"type": "string", "minLength": 1}
+  }
+}
