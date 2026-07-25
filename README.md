@@ -1,17 +1,17 @@
 # Douyin Favorites to Knowledge
 
-A small, transactional public core for turning authorized Douyin favorite metadata into reviewed local Markdown notes.
+Turn your authorized Douyin favorites into reviewed local Markdown notes. The built-in browser collector handles first-run login without asking you to copy or configure cookies.
 
 [![CI](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml/badge.svg)](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-This repository is the reusable transaction layer, not a bundled login bypass or private browser automation. A real collector is an explicit adapter supplied by the user in an authorized environment.
+This project accesses only the favorites of the account that you explicitly sign into. It does not bypass login or platform access controls.
 
 ## Design
 
 ```text
-authorized export or collector adapter
+authorized browser session, export, or adapter
               |
               v
         scan -> review.json
@@ -35,11 +35,45 @@ python3 -m venv .venv
 python -m pip install .
 ```
 
+Chrome or Edge is used when available. If neither is installed, install Playwright Chromium once:
+
+```bash
+python -m playwright install chromium
+```
+
 Install the Agent Skill separately when needed:
 
 ```bash
 cp -R skill ~/.codex/skills/douyin-favorites-to-knowledge
 ```
+
+## First sync
+
+Create a config from [config/config.example.json](config/config.example.json), then run `scan`. On the first run, a local browser opens for normal Douyin login. Later runs reuse that app-owned browser session.
+
+```bash
+douyin-favorites-knowledge --config config/config.example.json scan \
+  --review .runtime/review.json
+
+douyin-favorites-knowledge --config config/config.example.json review \
+  --review .runtime/review.json \
+  --approve-all \
+  --approval .runtime/approval.json
+
+douyin-favorites-knowledge --config config/config.example.json promote \
+  --review .runtime/review.json \
+  --approval .runtime/approval.json
+```
+
+The login can also be managed explicitly:
+
+```bash
+douyin-favorites-knowledge login
+douyin-favorites-knowledge status
+douyin-favorites-knowledge logout
+```
+
+`login`, `status`, and `logout` never print cookie values or require a config file. For unattended jobs, add `--no-login-prompt` to `scan` so an expired session fails instead of opening a browser.
 
 ## Quick fixture E2E
 
@@ -85,6 +119,16 @@ The input is a JSON list, or an object with an `items` list. Each item accepts:
 
 Unknown source fields are not copied into notes. Query parameters, cookies, and collector-specific metadata therefore do not leak through by default.
 
+## Browser privacy
+
+- Login happens on Douyin's website in a dedicated local browser profile.
+- Raw cookies are not accepted as CLI arguments or config fields and are never written to review files or notes.
+- The default profile is stored under the operating system's application-state directory, outside the repository.
+- `logout` clears the saved browser session. Uninstalling the Python package does not silently delete user data.
+- Douyin can expire a session or change its private web response shape. The collector fails closed and asks for login or an update instead of treating that failure as an empty collection.
+
+Use `DOUYIN_FAVORITES_PROFILE_DIR` only when you need to relocate the app-owned profile. Do not point it at a daily browser profile or a broad directory.
+
 ## Adapters
 
 Use `module:function` specs:
@@ -100,7 +144,7 @@ def notifier(event: dict, config: dict) -> None:
     ...
 ```
 
-The public config accepts output paths only and rejects secret-like keys. Adapters must read credentials from their host environment or secret manager. The notifier runs after commit, so a notifier error means local promotion may already be complete.
+The config accepts output paths only and rejects secret-like keys. Adapters must read credentials from their host environment or secret manager. The notifier runs after commit, so a notifier error means local promotion may already be complete.
 
 ## Safety gates
 
@@ -139,10 +183,11 @@ CI also installs the built wheel into a fresh virtual environment and runs the f
 ## Uninstall
 
 ```bash
+douyin-favorites-knowledge logout
 python -m pip uninstall douyin-favorites-to-knowledge
 ```
 
-Uninstalling the package intentionally does not delete your configured knowledge directory or SQLite ledger. Remove those data paths only after backing them up and verifying the exact config target.
+Uninstalling the package intentionally does not delete your configured knowledge directory, SQLite ledger, or browser profile. Remove those data paths only after backing them up and verifying the exact target.
 
 ## License
 

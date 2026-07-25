@@ -5,7 +5,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +17,7 @@ PYTHONPATH = str(ROOT / "src")
 sys.path.insert(0, PYTHONPATH)
 
 from douyin_favorites_knowledge.security import safe_error_message  # noqa: E402
+from douyin_favorites_knowledge.cli import main  # noqa: E402
 
 
 def cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -198,6 +202,65 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.review.exists())
         self.assertFalse(self.ledger.exists())
+
+    def test_scan_defaults_to_authorized_browser_collector(self):
+        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ) as collect, redirect_stdout(output):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "scan",
+                    "--review",
+                    str(self.review),
+                    "--max-items",
+                    "7",
+                    "--no-login-prompt",
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        collect.assert_called_once_with(
+            max_items=7,
+            interactive_login=False,
+            headed=False,
+            channel=None,
+        )
+        review = json.loads(self.review.read_text(encoding="utf-8"))
+        self.assertEqual(review["source_label"], "authorized_browser")
+
+    def test_login_does_not_require_config_or_expose_session_details(self):
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.login_browser",
+            return_value={"status": "authenticated"},
+        ), redirect_stdout(output):
+            returncode = main(["login", "--timeout", "30"])
+        self.assertEqual(returncode, 0)
+        self.assertEqual(json.loads(output.getvalue()), {"status": "authenticated"})
+
+    def test_status_returns_nonzero_when_login_is_required(self):
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.browser_status",
+            return_value={"status": "login_required"},
+        ), redirect_stdout(output):
+            returncode = main(["status"])
+        self.assertEqual(returncode, 1)
+        self.assertEqual(json.loads(output.getvalue()), {"status": "login_required"})
+
+    def test_logout_clears_session_without_requiring_config(self):
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.logout_browser",
+            return_value={"status": "logged_out"},
+        ), redirect_stdout(output):
+            returncode = main(["logout"])
+        self.assertEqual(returncode, 0)
+        self.assertEqual(json.loads(output.getvalue()), {"status": "logged_out"})
 
     def test_secret_like_config_key_is_rejected(self):
         payload = json.loads(self.config.read_text(encoding="utf-8"))

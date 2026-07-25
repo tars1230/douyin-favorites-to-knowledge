@@ -9,4 +9,4 @@ python3 -m compileall -q src tests
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-Use synthetic fixtures only. A PR must include expected exit codes for new failure cases and must not add credentials, personal paths, real favorite exports, browser state, or notification targets.
+Use synthetic fixtures and mocked browser responses only. A PR must include expected exit codes for new failure cases and must not add credentials, personal paths, real favorite exports, browser state, or notification targets.

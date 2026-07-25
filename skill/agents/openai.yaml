@@ -1,4 +1,4 @@
 interface:
   display_name: "Douyin Favorites to Knowledge"
-  short_description: "Review and promote authorized favorites into local notes"
-  default_prompt: "Use $douyin-favorites-to-knowledge to scan, review, and promote authorized favorite metadata without exposing credentials."
+  short_description: "Sync signed-in Douyin favorites into reviewed local notes"
+  default_prompt: "Use $douyin-favorites-to-knowledge to sign in locally, scan my authorized favorites, review them, and promote approved notes without exposing cookies."

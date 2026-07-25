@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 - 2026-07-25
+
+- Adds a built-in Playwright collector for the signed-in user's Douyin favorites.
+- Adds `login`, `status`, and `logout` commands backed by an app-owned local browser profile.
+- Makes authorized browser collection the default `scan` source while preserving JSON and custom adapters.
+- Opens normal Douyin login when needed without accepting or printing raw cookies.
+- Adds browser orchestration tests and fail-closed handling for login, response, and pagination failures.
+
 ## 1.0.0 - 2026-07-25
 
 - First public release.
