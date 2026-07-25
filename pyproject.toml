@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "douyin-favorites-to-knowledge"
-version = "1.0.0"
-description = "Transactional, adapter-based pipeline for promoting reviewed Douyin favorites into local knowledge notes"
+version = "1.1.0"
+description = "Authorized browser collection and transactional promotion of Douyin favorites into local knowledge notes"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Cheng Chen"}]
-dependencies = []
+dependencies = ["playwright>=1.50,<2"]
 
 [project.scripts]
 douyin-favorites-knowledge = "douyin_favorites_knowledge.cli:main"
