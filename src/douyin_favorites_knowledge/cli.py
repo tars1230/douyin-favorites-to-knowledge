@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .adapters import load_adapter
 from .browser_collector import browser_status, collect_browser_favorites, login_browser, logout_browser
-from .config import Config, StageConfig, load_config
+from .config import Config, StageConfig, default_config_path, load_config
 from .security import safe_error_message
 from .workflow import (
     atomic_write_json,
@@ -21,8 +21,15 @@ from .workflow import (
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="将审核通过的抖音收藏写入本地知识库")
-    root.add_argument("--config", type=Path, help="schema_version 为 1 或 2 的 JSON 配置路径")
+    root.add_argument("--config", type=Path, help="可选配置路径；setup 后通常不需要填写")
     commands = root.add_subparsers(dest="command", required=True)
+
+    setup = commands.add_parser("setup", help="完成首次配置并登录抖音")
+    setup.add_argument("--knowledge-dir", type=Path, help="Markdown 或 Obsidian 知识库目录")
+    setup.add_argument("--skip-login", action="store_true", help="只创建配置，暂不打开登录页")
+    setup.add_argument("--force", action="store_true", help="覆盖已有配置并重新选择知识库")
+    setup.add_argument("--timeout", type=int, default=300, help="等待登录的秒数")
+    setup.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
     login = commands.add_parser("login", help="打开本地浏览器并保存授权登录状态")
     login.add_argument("--timeout", type=int, default=300, help="等待登录的秒数")
@@ -35,6 +42,14 @@ def parser() -> argparse.ArgumentParser:
     logout.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
     commands.add_parser("check-config", help="检查配置并显示已启用模式，不输出敏感信息")
+
+    sync = commands.add_parser("sync", help="扫描新增收藏，确认后写入知识库")
+    sync.add_argument("--yes", action="store_true", help="明确批准本次全部新增，适合自动任务")
+    sync.add_argument("--max-items", type=int, default=200, help="浏览器单次最多采集条数")
+    sync.add_argument("--headed", action="store_true", help="采集时保持浏览器可见")
+    sync.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
+    sync.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+    sync.add_argument("--dry-run", action="store_true", help="只显示新增候选，不写入知识库")
 
     scan = commands.add_parser("scan", help="生成待审核清单，不修改知识库")
     source = scan.add_mutually_exclusive_group()
@@ -85,6 +100,46 @@ def _config_summary(config: Config) -> dict:
     }
 
 
+def _light_config_payload(config_path: Path, knowledge_dir: Path) -> dict:
+    return {
+        "schema_version": 2,
+        "mode": "light",
+        "knowledge_dir": str(knowledge_dir.expanduser().resolve()),
+        "ledger_path": str((config_path.parent / "state" / "ledger.sqlite3").resolve()),
+        "transcription": {"enabled": False, "provider": "none"},
+        "analysis": {"enabled": False, "provider": "none"},
+        "notification": {"enabled": False, "provider": "none"},
+    }
+
+
+def _setup(args: argparse.Namespace) -> int:
+    config_path = (args.config or default_config_path()).expanduser().resolve()
+    if config_path.exists() and not args.force:
+        if args.knowledge_dir is not None:
+            raise ValueError("配置已存在；更换知识库目录请使用 setup --force")
+        load_config(config_path)
+    else:
+        default_knowledge = Path.home() / "Douyin Knowledge"
+        knowledge_dir = args.knowledge_dir
+        if knowledge_dir is None:
+            try:
+                answer = input(f"知识库目录 [{default_knowledge}]: ").strip()
+            except EOFError as exc:
+                raise ValueError("非交互安装请使用 setup --knowledge-dir 指定知识库目录") from exc
+            knowledge_dir = Path(answer).expanduser() if answer else default_knowledge
+        atomic_write_json(config_path, _light_config_payload(config_path, knowledge_dir))
+        load_config(config_path)
+
+    login_status = "skipped"
+    if not args.skip_login:
+        login_status = login_browser(
+            timeout_seconds=args.timeout,
+            channel=args.browser_channel,
+        )["status"]
+    _print({"status": "ready", "login": login_status})
+    return 0
+
+
 def _apply_enricher(raw_items: list[dict], spec: str, context: dict) -> list[dict]:
     enricher = load_adapter(spec)
     enriched = []
@@ -114,9 +169,77 @@ def _configured_notifier(config: Config) -> tuple[str, dict] | None:
     return stage.adapter, stage.context(config.mode)
 
 
+def _notify_if_configured(config: Config, result: dict) -> None:
+    configured = _configured_notifier(config)
+    if not configured or not result["promoted_count"]:
+        return
+    notifier = load_adapter(configured[0])
+    notifier(dict(result), configured[1])
+    result["notification"] = "sent"
+
+
+def _sync(args: argparse.Namespace, config: Config) -> int:
+    raw_items = collect_browser_favorites(
+        max_items=args.max_items,
+        interactive_login=not args.no_login_prompt,
+        headed=args.headed,
+        channel=args.browser_channel,
+    )
+    raw_items = _apply_configured_stages(list(raw_items), config)
+    manifest = build_review(config, raw_items, "authorized_browser")
+    candidates = manifest["items"]
+    if not candidates:
+        _print({"status": "no_changes"})
+        return 0
+
+    preview = [
+        {"aweme_id": item["aweme_id"], "title": item["title"][:120]}
+        for item in candidates[:20]
+    ]
+    if args.dry_run:
+        _print({"status": "review_required", **manifest["summary"], "preview": preview})
+        return 0
+
+    if not args.yes:
+        print(f"发现 {len(candidates)} 条新增收藏：")
+        for item in preview:
+            print(f"- {item['aweme_id']}  {item['title']}")
+        if len(candidates) > len(preview):
+            print(f"- 以及另外 {len(candidates) - len(preview)} 条")
+        try:
+            answer = input("确认写入知识库？[y/N]: ").strip().lower()
+        except EOFError as exc:
+            raise ValueError("非交互同步请明确使用 sync --yes 或 sync --dry-run") from exc
+        if answer not in {"y", "yes"}:
+            _print({"status": "cancelled", "candidate_count": len(candidates)})
+            return 0
+
+    runtime_dir = config.ledger_path.parent / "sync"
+    review_path = runtime_dir / "review.json"
+    approval_path = runtime_dir / "approval.json"
+    atomic_write_json(review_path, manifest)
+    approval = build_approval(review_path, [item["aweme_id"] for item in candidates])
+    atomic_write_json(approval_path, approval)
+    result = promote(config, review_path, approval_path)
+    result["status"] = "committed"
+    _notify_if_configured(config, result)
+    summary = {
+        "status": result["status"],
+        "promoted_count": result["promoted_count"],
+        "skipped_count": result["skipped_count"],
+    }
+    if "notification" in result:
+        summary["notification"] = result["notification"]
+    _print(summary)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "setup":
+            return _setup(args)
+
         if args.command == "login":
             _print(login_browser(timeout_seconds=args.timeout, channel=args.browser_channel))
             return 0
@@ -130,12 +253,15 @@ def main(argv: list[str] | None = None) -> int:
             _print(logout_browser(channel=args.browser_channel))
             return 0
 
-        if args.config is None:
-            raise ValueError(f"--config is required for {args.command}")
-        config = load_config(args.config)
+        config_path = (args.config or default_config_path()).expanduser().resolve()
+        if not config_path.exists():
+            raise ValueError("尚未完成配置，请先运行 douyin-favorites-knowledge setup")
+        config = load_config(config_path)
         if args.command == "check-config":
             _print(_config_summary(config))
             return 0
+        if args.command == "sync":
+            return _sync(args, config)
         if args.command == "scan":
             if args.input:
                 raw_items = read_input(args.input)

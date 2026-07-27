@@ -1,94 +1,75 @@
 ---
 name: douyin-favorites-to-knowledge
-description: 将用户已授权账号中的抖音收藏，通过本地浏览器登录、增量扫描、人工审核和幂等事务写入 Markdown 知识库；按需接入本地转录、MiniMax 或其他分析模型及飞书通知。用于首次登录、收藏同步、JSON 导入、审核批准、Obsidian 入库或配置可选 adapter；不得绕过登录、访问他人账号或泄露私密数据。
+description: 将用户已授权账号中的抖音收藏配置并同步到本地 Markdown 或 Obsidian 知识库；提供首次 setup、增量 sync、登录恢复、JSON 导入、局部审核，以及按需接入本地转录、MiniMax 或其他分析模型和飞书通知。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
 ---
 
 # 抖音收藏转本地知识库
 
-使用仓库提供的 CLI。默认选择轻量模式；只有用户已经具备可靠的转录、模型或通知 adapter 时，才启用完整模式。不要要求用户复制 Cookie。
+优先使用单入口流程。不要先向用户解释 schema、模式、provider 或 adapter。
 
-## 先确定模式
+## 首次使用
 
-- `light`：官方页面登录、扫描、审核、批准、写入 Markdown 与 SQLite 账本。
-- `full`：在轻量流程中依次增加可选转录、分析和通知 adapter。
-
-MiniMax 不是必需项。本地模型名称因电脑而异，必须以用户实际可用模型为准。`provider` 记录选择，`adapter` 执行调用；不要声称仓库会自动下载视频、安装模型或配置飞书。
-
-首次安装时引导用户复制 `config/config.example.json` 为 `config/config.local.json`，只修改知识库路径，然后先运行：
+确认仓库已经安装后运行：
 
 ```bash
-douyin-favorites-knowledge --config config/config.local.json check-config
+douyin-favorites-knowledge setup
 ```
 
-只有输出 `status: valid` 且 `mode: light` 后，才继续登录和首次扫描。提醒用户 `--config` 必须放在子命令前。完整模式应在轻量模式成功入库后再配置。
+让用户选择 Markdown 或 Obsidian 知识库目录。`setup` 生成默认轻量配置并打开抖音官方页面登录。不要要求用户复制 Cookie。
 
-## 前置边界
-
-- 用户有权访问来源收藏，采集方式符合平台条款和当地法律。
-- 浏览器状态只留在应用独立 profile，不打印、不导出。
-- Cookie、API key、飞书密钥等凭据只从环境变量、系统钥匙串或 Secret Manager 读取。
-- JSON 配置只保存路径、provider、模型名和非敏感选项；可疑密钥字段会被拒绝。
-
-## 事务流程
-
-### 1. 扫描
-
-无来源参数时使用内置浏览器 collector。首次运行打开抖音官方页面登录，之后复用本地会话：
+如果 Agent 在非交互环境执行，明确指定目录：
 
 ```bash
-douyin-favorites-knowledge --config config.json scan --review review.json
+douyin-favorites-knowledge setup --knowledge-dir "用户确认的目录" --skip-login
 ```
 
-无人值守任务加 `--no-login-prompt`，让登录过期明确失败。可用 `login`、`status`、`logout` 单独管理会话，这三个命令不需要配置文件。
+随后让用户在自己的终端运行 `douyin-favorites-knowledge login` 完成网页登录。不要替用户猜测知识库目录。
 
-授权导出使用 `--input favorites.json`；外部 collector 使用 `--collector module:function`。配置为完整模式时，CLI 会按 `transcription -> analysis` 顺序调用已启用的 adapter。临时的一次性增强仍可用 `--enricher module:function`。
-
-### 2. 审核与批准
-
-先校验内容哈希、规范来源地址、笔记内容、重复 ID 和敏感信息，再明确批准：
+## 日常同步
 
 ```bash
-douyin-favorites-knowledge --config config.json review \
-  --review review.json \
-  --approve-all \
-  --approval approval.json
+douyin-favorites-knowledge sync
 ```
 
-部分批准时重复使用 `--approve <aweme_id>`。批准后不要修改 review，promote 会校验其 SHA-256。
+`sync` 展示新增收藏并等待用户确认，然后完成审核、批准和原子入库。用户取消时不写知识库或账本。
 
-### 3. 写入知识库
+只有用户明确要求无人值守自动同步时，才使用：
 
 ```bash
-douyin-favorites-knowledge --config config.json promote \
-  --review review.json \
-  --approval approval.json
+douyin-favorites-knowledge sync --yes --no-login-prompt
 ```
 
-CLI 先原子写入 Markdown，再提交不可变内容哈希到 SQLite。同一内容重复执行是空操作。已入库 ID 的内容发生变化时停止，交由人工迁移。配置通知 adapter 后，仅在本地提交成功且确有新增时调用。
+`--yes` 是批准全部新增的显式授权。不要私自创建 cron 或系统定时任务。
 
-## Adapter 规则
+## 故障处理
 
-```python
-def transcribe(item: dict, context: dict) -> dict: ...
-def analyze(item: dict, context: dict) -> dict: ...
-def notify(event: dict, context: dict) -> None: ...
+先运行：
+
+```bash
+douyin-favorites-knowledge check-config
+douyin-favorites-knowledge status
 ```
 
-配置阶段的 `context` 只包含 `mode`、`stage`、`provider`、`model` 和 `options`。转录或分析返回字段更新；禁止改变 `aweme_id`。通知发生在本地事务提交之后，通知失败不代表本地笔记已回滚。
+- 未配置：运行 `setup`；
+- 登录过期：运行 `login`；
+- 无浏览器：安装 Playwright Chromium；
+- 无新增：把 `no_changes` 当作正常结果；
+- 想换目录：让用户确认后运行 `setup --force --knowledge-dir "新目录"`；
+- secret-like 配置错误：删除配置中的凭据，改从环境或 Secret Manager 读取。
 
-如果转录需要下载视频，adapter 必须只使用已授权会话、限制临时目录并主动清理。不要把核心仓库描述成内置下载器。
+`check-config` 不输出本机路径、adapter 或凭据。不要请求或显示浏览器 profile 和 Cookie。
 
-## 必须阻止
+## 进阶能力
 
-- `<think>` 或 `<analysis>` 推理标签；
-- Unicode 替换字符、NUL 或常见真实密钥格式；
-- secret、token、password、cookie、credential、API key 类配置字段；
-- 非法或冲突的重复 ID；
-- 笔记、内容哈希或批准文件被修改；
-- 已入库 ID 的内容变化；
-- 未登记但同名且内容冲突的笔记。
+只有用户明确要求本地转录、MiniMax、其他模型、飞书通知、局部批准、JSON 导入或 adapter 调试时，才展开高级配置。
 
-不要为了自动化继续运行而把这些错误降级为警告。
+- 默认轻量配置不下载模型、不要求 MiniMax；
+- 模型名按用户电脑实际能力配置；
+- 凭据只从环境变量、系统钥匙串或 Secret Manager 读取；
+- 当前仓库不内置视频下载器、模型安装器、MiniMax 客户端或飞书机器人；
+- 转录、分析和通知通过 `module:function` adapter 接入。
+
+原子命令 `scan -> review -> promote` 保留给局部审核和调试。批准必须明确；不得为了自动化把哈希、重复 ID、敏感信息或冲突文件错误降级为警告。
 
 ## 验证
 
@@ -97,4 +78,4 @@ python3 -m compileall -q src tests
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-fixture 成功只证明事务和浏览器编排契约；真实采集仍依赖有效的授权登录和抖音当前页面结构。
+真实采集依赖有效的授权登录和抖音当前页面结构。fixture 通过只证明事务与编排契约。

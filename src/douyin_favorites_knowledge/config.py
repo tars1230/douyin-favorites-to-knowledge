@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,20 @@ STAGE_PROVIDERS = {
     "analysis": {"none", "local", "minimax", "adapter"},
     "notification": {"none", "feishu", "adapter"},
 }
+
+
+def default_config_path() -> Path:
+    override = os.environ.get("DOUYIN_FAVORITES_CONFIG")
+    if override:
+        return Path(override).expanduser().resolve()
+    system = platform.system()
+    if system == "Darwin":
+        root = Path.home() / "Library" / "Application Support"
+    elif system == "Windows":
+        root = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return root / "douyin-favorites-to-knowledge" / "config.json"
 
 
 def _stage_config(raw: dict[str, Any], name: str) -> StageConfig:
