@@ -18,6 +18,7 @@ sys.path.insert(0, PYTHONPATH)
 
 from douyin_favorites_knowledge.security import safe_error_message  # noqa: E402
 from douyin_favorites_knowledge.cli import main  # noqa: E402
+from douyin_favorites_knowledge.config import default_config_path, load_config  # noqa: E402
 
 
 def cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -269,6 +270,401 @@ class WorkflowTests(unittest.TestCase):
         result = self.scan()
         self.assertEqual(result.returncode, 1)
         self.assertIn("secret-like key blocked", result.stderr)
+
+    def test_schema_v1_config_remains_light_mode_compatible(self):
+        config = load_config(self.config)
+        self.assertEqual(config.mode, "light")
+        self.assertEqual(config.enrichment_stages(), ())
+        self.assertFalse(config.notification.enabled)
+
+    def test_check_config_guides_setup_without_exposing_local_paths(self):
+        result = cli(self.config, "check-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "valid")
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["mode"], "light")
+        self.assertEqual(
+            payload["stages"],
+            {
+                "analysis": {"enabled": False, "provider": "none"},
+                "notification": {"enabled": False, "provider": "none"},
+                "transcription": {"enabled": False, "provider": "none"},
+            },
+        )
+        self.assertNotIn(str(self.root), result.stdout)
+        self.assertNotIn("ledger.sqlite3", result.stdout)
+
+    def test_default_config_path_honors_environment_override(self):
+        custom = self.root / "app-config.json"
+        with patch.dict(os.environ, {"DOUYIN_FAVORITES_CONFIG": str(custom)}):
+            self.assertEqual(default_config_path(), custom.resolve())
+
+    def test_setup_creates_safe_light_config_without_login(self):
+        setup_config = self.root / "app" / "config.json"
+        output = StringIO()
+        with redirect_stdout(output):
+            returncode = main(
+                [
+                    "--config",
+                    str(setup_config),
+                    "setup",
+                    "--knowledge-dir",
+                    str(self.knowledge),
+                    "--skip-login",
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        payload = json.loads(setup_config.read_text(encoding="utf-8"))
+        self.assertEqual(payload["mode"], "light")
+        self.assertEqual(payload["knowledge_dir"], str(self.knowledge.resolve()))
+        self.assertNotIn("cookie", setup_config.read_text(encoding="utf-8").lower())
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["login"], "skipped")
+        self.assertNotIn(str(self.root), output.getvalue())
+
+    def test_setup_opens_login_by_default(self):
+        setup_config = self.root / "login-setup" / "config.json"
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.login_browser",
+            return_value={"status": "authenticated"},
+        ) as login, redirect_stdout(output):
+            returncode = main(
+                [
+                    "--config",
+                    str(setup_config),
+                    "setup",
+                    "--knowledge-dir",
+                    str(self.knowledge),
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        login.assert_called_once_with(timeout_seconds=300, channel=None)
+        self.assertEqual(json.loads(output.getvalue())["login"], "authenticated")
+
+    def test_setup_uses_default_config_for_followup_commands(self):
+        setup_config = self.root / "default" / "config.json"
+        with patch.dict(os.environ, {"DOUYIN_FAVORITES_CONFIG": str(setup_config)}):
+            output = StringIO()
+            with redirect_stdout(output):
+                setup_code = main(
+                    [
+                        "setup",
+                        "--knowledge-dir",
+                        str(self.knowledge),
+                        "--skip-login",
+                    ]
+                )
+            self.assertEqual(setup_code, 0)
+            output = StringIO()
+            with redirect_stdout(output):
+                check_code = main(["check-config"])
+        self.assertEqual(check_code, 0)
+        self.assertEqual(json.loads(output.getvalue())["mode"], "light")
+
+    def test_setup_does_not_silently_ignore_new_directory(self):
+        output = StringIO()
+        errors = StringIO()
+        with redirect_stdout(output), patch("sys.stderr", errors):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "setup",
+                    "--knowledge-dir",
+                    str(self.root / "another-knowledge"),
+                    "--skip-login",
+                ]
+            )
+        self.assertEqual(returncode, 1)
+        self.assertIn("setup --force", errors.getvalue())
+        self.assertFalse((self.root / "another-knowledge").exists())
+
+    def test_sync_previews_and_promotes_after_confirmation(self):
+        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ), patch("builtins.input", return_value="y") as prompt, redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "sync"])
+        self.assertEqual(returncode, 0)
+        prompt.assert_called_once_with("确认写入知识库？[y/N]: ")
+        self.assertIn("发现 2 条新增收藏", output.getvalue())
+        result = json.loads(output.getvalue().splitlines()[-1])
+        self.assertEqual(result["status"], "committed")
+        self.assertEqual(result["promoted_count"], 2)
+        self.assertEqual(len(list(self.knowledge.glob("*.md"))), 2)
+
+    def test_sync_cancel_keeps_knowledge_and_ledger_untouched(self):
+        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ), patch("builtins.input", return_value="n"), redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "sync"])
+        self.assertEqual(returncode, 0)
+        self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["status"], "cancelled")
+        self.assertFalse(self.knowledge.exists())
+        self.assertFalse(self.ledger.exists())
+
+    def test_sync_yes_supports_noninteractive_automation(self):
+        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ), patch("builtins.input") as prompt, redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "sync", "--yes"])
+        self.assertEqual(returncode, 0)
+        prompt.assert_not_called()
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "committed")
+        self.assertEqual(result["promoted_count"], 2)
+
+    def test_sync_reports_no_changes_after_same_items_are_committed(self):
+        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ), redirect_stdout(StringIO()):
+            self.assertEqual(main(["--config", str(self.config), "sync", "--yes"]), 0)
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ), redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "sync", "--yes"])
+        self.assertEqual(returncode, 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "no_changes")
+        self.assertEqual(result, {"status": "no_changes"})
+
+    def test_sync_dry_run_writes_nothing(self):
+        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ), redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "sync", "--dry-run"])
+        self.assertEqual(returncode, 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "review_required")
+        self.assertEqual(len(result["preview"]), 2)
+        self.assertFalse(self.knowledge.exists())
+        self.assertFalse(self.ledger.exists())
+
+    def test_full_mode_runs_configured_stages_in_order(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "transcription": {
+                        "enabled": True,
+                        "provider": "local",
+                        "adapter": "example.pipeline:transcribe",
+                        "model": "user-selected-asr",
+                    },
+                    "analysis": {
+                        "enabled": True,
+                        "provider": "minimax",
+                        "adapter": "example.pipeline:analyze",
+                        "model": "user-selected-analysis-model",
+                    },
+                    "notification": {"enabled": False, "provider": "none"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        calls = []
+
+        def load(spec):
+            if spec.endswith(":transcribe"):
+                def transcribe(item, context):
+                    calls.append((context["stage"], context["provider"], context["model"]))
+                    return {"transcript": "本地转录结果"}
+
+                return transcribe
+
+            def analyze(item, context):
+                calls.append((context["stage"], context["provider"], context["model"]))
+                self.assertEqual(item["transcript"], "本地转录结果")
+                return {"tags": ["自动分析"]}
+
+            return analyze
+
+        output = StringIO()
+        with patch("douyin_favorites_knowledge.cli.load_adapter", side_effect=load), redirect_stdout(output):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "scan",
+                    "--input",
+                    str(FIXTURE),
+                    "--review",
+                    str(self.review),
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(
+            calls,
+            [
+                ("transcription", "local", "user-selected-asr"),
+                ("transcription", "local", "user-selected-asr"),
+                ("analysis", "minimax", "user-selected-analysis-model"),
+                ("analysis", "minimax", "user-selected-analysis-model"),
+            ],
+        )
+        review = json.loads(self.review.read_text(encoding="utf-8"))
+        self.assertEqual(review["items"][0]["transcript"], "本地转录结果")
+        self.assertEqual(review["items"][0]["tags"], ["自动分析"])
+
+    def test_light_mode_rejects_enabled_optional_stage(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "light",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "analysis": {
+                        "enabled": True,
+                        "provider": "adapter",
+                        "adapter": "example.pipeline:analyze",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("light mode cannot enable optional stages", result.stderr)
+
+    def test_provider_credentials_cannot_be_written_to_config(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "analysis": {
+                        "enabled": True,
+                        "provider": "minimax",
+                        "adapter": "example.pipeline:analyze",
+                        "model": "example-model",
+                        "options": {"api_key": "placeholder"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("secret-like key blocked", result.stderr)
+
+    def test_invalid_provider_type_is_reported_without_traceback(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "analysis": {"enabled": True, "provider": ["minimax"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unsupported analysis provider", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_invalid_schema_version_type_is_reported_without_traceback(self):
+        payload = json.loads(self.config.read_text(encoding="utf-8"))
+        payload["schema_version"] = [2]
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("schema_version must be 1 or 2", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_adapter_runtime_error_is_redacted(self):
+        token = "sk-" + "A" * 24
+        output = StringIO()
+        errors = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.load_adapter",
+            return_value=lambda item, context: (_ for _ in ()).throw(RuntimeError(token)),
+        ), redirect_stdout(output), patch("sys.stderr", errors):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "scan",
+                    "--input",
+                    str(FIXTURE),
+                    "--enricher",
+                    "example.pipeline:enrich",
+                    "--review",
+                    str(self.review),
+                ]
+            )
+        self.assertEqual(returncode, 1)
+        self.assertNotIn(token, errors.getvalue())
+        self.assertIn("[REDACTED]", errors.getvalue())
+        self.assertFalse(self.review.exists())
+
+    def test_configured_notifier_receives_stage_context(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "notification": {
+                        "enabled": True,
+                        "provider": "feishu",
+                        "adapter": "example.pipeline:notify",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        seen = []
+
+        def notifier(event, context):
+            seen.append((event["promoted_count"], context))
+
+        output = StringIO()
+        with patch("douyin_favorites_knowledge.cli.load_adapter", return_value=notifier), redirect_stdout(output):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "promote",
+                    "--review",
+                    str(self.review),
+                    "--approval",
+                    str(self.approval),
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(seen[0][0], 2)
+        self.assertEqual(seen[0][1]["stage"], "notification")
+        self.assertEqual(seen[0][1]["provider"], "feishu")
 
     def test_concurrent_promotions_serialize(self):
         self.assertEqual(self.scan().returncode, 0)

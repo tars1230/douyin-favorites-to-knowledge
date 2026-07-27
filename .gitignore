@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 .venv/
 .runtime/
+config/config.local.json
 build/
 dist/
 *.egg-info/

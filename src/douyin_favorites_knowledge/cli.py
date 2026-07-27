@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
 from .adapters import load_adapter
 from .browser_collector import browser_status, collect_browser_favorites, login_browser, logout_browser
-from .config import load_config
+from .config import Config, StageConfig, default_config_path, load_config
 from .security import safe_error_message
 from .workflow import (
     atomic_write_json,
@@ -21,47 +20,64 @@ from .workflow import (
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Promote reviewed Douyin favorites into local knowledge notes")
-    root.add_argument("--config", type=Path, help="Path to schema_version=1 JSON config")
+    root = argparse.ArgumentParser(description="将审核通过的抖音收藏写入本地知识库")
+    root.add_argument("--config", type=Path, help="可选配置路径；setup 后通常不需要填写")
     commands = root.add_subparsers(dest="command", required=True)
 
-    login = commands.add_parser("login", help="Open a local browser and save an authorized session")
-    login.add_argument("--timeout", type=int, default=300, help="Seconds to wait for login")
-    login.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
+    setup = commands.add_parser("setup", help="完成首次配置并登录抖音")
+    setup.add_argument("--knowledge-dir", type=Path, help="Markdown 或 Obsidian 知识库目录")
+    setup.add_argument("--skip-login", action="store_true", help="只创建配置，暂不打开登录页")
+    setup.add_argument("--force", action="store_true", help="覆盖已有配置并重新选择知识库")
+    setup.add_argument("--timeout", type=int, default=300, help="等待登录的秒数")
+    setup.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
-    status = commands.add_parser("status", help="Check the saved browser session without exposing it")
-    status.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
+    login = commands.add_parser("login", help="打开本地浏览器并保存授权登录状态")
+    login.add_argument("--timeout", type=int, default=300, help="等待登录的秒数")
+    login.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
-    logout = commands.add_parser("logout", help="Clear the locally saved Douyin browser session")
-    logout.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
+    status = commands.add_parser("status", help="检查已保存的浏览器登录状态，不输出会话内容")
+    status.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
-    scan = commands.add_parser("scan", help="Create a non-mutating review manifest")
+    logout = commands.add_parser("logout", help="清除本地保存的抖音浏览器会话")
+    logout.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+
+    commands.add_parser("check-config", help="检查配置并显示已启用模式，不输出敏感信息")
+
+    sync = commands.add_parser("sync", help="扫描新增收藏，确认后写入知识库")
+    sync.add_argument("--yes", action="store_true", help="明确批准本次全部新增，适合自动任务")
+    sync.add_argument("--max-items", type=int, default=200, help="浏览器单次最多采集条数")
+    sync.add_argument("--headed", action="store_true", help="采集时保持浏览器可见")
+    sync.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
+    sync.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+    sync.add_argument("--dry-run", action="store_true", help="只显示新增候选，不写入知识库")
+
+    scan = commands.add_parser("scan", help="生成待审核清单，不修改知识库")
     source = scan.add_mutually_exclusive_group()
-    source.add_argument("--input", type=Path, help="JSON list or object containing items")
-    source.add_argument("--collector", help="Collector adapter in module:function format")
-    source.add_argument("--browser", action="store_true", help="Use the built-in authorized browser collector")
-    scan.add_argument("--enricher", help="Optional per-item enricher adapter in module:function format")
-    scan.add_argument("--source-label", help="Non-sensitive source label stored in the manifest")
-    scan.add_argument("--review", type=Path, required=True, help="Review manifest output")
-    scan.add_argument("--max-items", type=int, default=200, help="Maximum browser items to collect")
-    scan.add_argument("--headed", action="store_true", help="Keep the collection browser visible")
-    scan.add_argument("--no-login-prompt", action="store_true", help="Fail instead of opening login")
-    scan.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
-    scan.add_argument("--dry-run", action="store_true", help="Validate and summarize without writing")
+    source.add_argument("--input", type=Path, help="包含收藏条目的 JSON 列表或对象")
+    source.add_argument("--collector", help="module:function 格式的 collector adapter")
+    source.add_argument("--browser", action="store_true", help="使用内置授权浏览器 collector")
+    scan.add_argument("--enricher", help="可选的单条内容增强 adapter，格式为 module:function")
+    scan.add_argument("--source-label", help="写入审核清单的非敏感来源标签")
+    scan.add_argument("--review", type=Path, required=True, help="待审核清单输出路径")
+    scan.add_argument("--max-items", type=int, default=200, help="浏览器单次最多采集条数")
+    scan.add_argument("--headed", action="store_true", help="采集时保持浏览器可见")
+    scan.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
+    scan.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+    scan.add_argument("--dry-run", action="store_true", help="只校验和汇总，不写入文件")
 
-    review = commands.add_parser("review", help="Validate a review and optionally create explicit approval")
+    review = commands.add_parser("review", help="校验待审核清单，并按明确选择生成批准文件")
     review.add_argument("--review", type=Path, required=True)
     review.add_argument("--approval", type=Path)
     selection = review.add_mutually_exclusive_group()
     selection.add_argument("--approve-all", action="store_true")
     selection.add_argument("--approve", action="append", default=[], metavar="AWEME_ID")
-    review.add_argument("--dry-run", action="store_true", help="Validate selection without writing approval")
+    review.add_argument("--dry-run", action="store_true", help="只校验批准选择，不写入批准文件")
 
-    promote_cmd = commands.add_parser("promote", help="Atomically write approved notes and ledger entries")
+    promote_cmd = commands.add_parser("promote", help="原子写入已批准笔记和防重账本")
     promote_cmd.add_argument("--review", type=Path, required=True)
     promote_cmd.add_argument("--approval", type=Path, required=True)
-    promote_cmd.add_argument("--notifier", help="Optional post-commit notifier in module:function format")
-    promote_cmd.add_argument("--dry-run", action="store_true", help="Validate transaction without writing")
+    promote_cmd.add_argument("--notifier", help="提交后可选通知 adapter，格式为 module:function")
+    promote_cmd.add_argument("--dry-run", action="store_true", help="只校验事务，不写入知识库")
     return root
 
 
@@ -69,9 +85,161 @@ def _print(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
+def _config_summary(config: Config) -> dict:
+    stages = {}
+    for stage in (config.transcription, config.analysis, config.notification):
+        status = {"enabled": stage.enabled, "provider": stage.provider}
+        if stage.model:
+            status["model"] = stage.model
+        stages[stage.name] = status
+    return {
+        "status": "valid",
+        "schema_version": config.raw["schema_version"],
+        "mode": config.mode,
+        "stages": stages,
+    }
+
+
+def _light_config_payload(config_path: Path, knowledge_dir: Path) -> dict:
+    return {
+        "schema_version": 2,
+        "mode": "light",
+        "knowledge_dir": str(knowledge_dir.expanduser().resolve()),
+        "ledger_path": str((config_path.parent / "state" / "ledger.sqlite3").resolve()),
+        "transcription": {"enabled": False, "provider": "none"},
+        "analysis": {"enabled": False, "provider": "none"},
+        "notification": {"enabled": False, "provider": "none"},
+    }
+
+
+def _setup(args: argparse.Namespace) -> int:
+    config_path = (args.config or default_config_path()).expanduser().resolve()
+    if config_path.exists() and not args.force:
+        if args.knowledge_dir is not None:
+            raise ValueError("配置已存在；更换知识库目录请使用 setup --force")
+        load_config(config_path)
+    else:
+        default_knowledge = Path.home() / "Douyin Knowledge"
+        knowledge_dir = args.knowledge_dir
+        if knowledge_dir is None:
+            try:
+                answer = input(f"知识库目录 [{default_knowledge}]: ").strip()
+            except EOFError as exc:
+                raise ValueError("非交互安装请使用 setup --knowledge-dir 指定知识库目录") from exc
+            knowledge_dir = Path(answer).expanduser() if answer else default_knowledge
+        atomic_write_json(config_path, _light_config_payload(config_path, knowledge_dir))
+        load_config(config_path)
+
+    login_status = "skipped"
+    if not args.skip_login:
+        login_status = login_browser(
+            timeout_seconds=args.timeout,
+            channel=args.browser_channel,
+        )["status"]
+    _print({"status": "ready", "login": login_status})
+    return 0
+
+
+def _apply_enricher(raw_items: list[dict], spec: str, context: dict) -> list[dict]:
+    enricher = load_adapter(spec)
+    enriched = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            raise ValueError("each source item must be an object before enrichment")
+        update = enricher(dict(raw), dict(context))
+        if not isinstance(update, dict):
+            raise ValueError("enricher must return an object")
+        if "aweme_id" in update and str(update["aweme_id"]) != str(raw.get("aweme_id", "")):
+            raise ValueError("enricher cannot change aweme_id")
+        update.pop("source_url", None)
+        enriched.append({**raw, **update})
+    return enriched
+
+
+def _apply_configured_stages(raw_items: list[dict], config: Config) -> list[dict]:
+    for stage in config.enrichment_stages():
+        raw_items = _apply_enricher(raw_items, stage.adapter, stage.context(config.mode))
+    return raw_items
+
+
+def _configured_notifier(config: Config) -> tuple[str, dict] | None:
+    stage: StageConfig = config.notification
+    if not stage.enabled:
+        return None
+    return stage.adapter, stage.context(config.mode)
+
+
+def _notify_if_configured(config: Config, result: dict) -> None:
+    configured = _configured_notifier(config)
+    if not configured or not result["promoted_count"]:
+        return
+    notifier = load_adapter(configured[0])
+    notifier(dict(result), configured[1])
+    result["notification"] = "sent"
+
+
+def _sync(args: argparse.Namespace, config: Config) -> int:
+    raw_items = collect_browser_favorites(
+        max_items=args.max_items,
+        interactive_login=not args.no_login_prompt,
+        headed=args.headed,
+        channel=args.browser_channel,
+    )
+    raw_items = _apply_configured_stages(list(raw_items), config)
+    manifest = build_review(config, raw_items, "authorized_browser")
+    candidates = manifest["items"]
+    if not candidates:
+        _print({"status": "no_changes"})
+        return 0
+
+    preview = [
+        {"aweme_id": item["aweme_id"], "title": item["title"][:120]}
+        for item in candidates[:20]
+    ]
+    if args.dry_run:
+        _print({"status": "review_required", **manifest["summary"], "preview": preview})
+        return 0
+
+    if not args.yes:
+        print(f"发现 {len(candidates)} 条新增收藏：")
+        for item in preview:
+            print(f"- {item['aweme_id']}  {item['title']}")
+        if len(candidates) > len(preview):
+            print(f"- 以及另外 {len(candidates) - len(preview)} 条")
+        try:
+            answer = input("确认写入知识库？[y/N]: ").strip().lower()
+        except EOFError as exc:
+            raise ValueError("非交互同步请明确使用 sync --yes 或 sync --dry-run") from exc
+        if answer not in {"y", "yes"}:
+            _print({"status": "cancelled", "candidate_count": len(candidates)})
+            return 0
+
+    runtime_dir = config.ledger_path.parent / "sync"
+    review_path = runtime_dir / "review.json"
+    approval_path = runtime_dir / "approval.json"
+    atomic_write_json(review_path, manifest)
+    approval = build_approval(review_path, [item["aweme_id"] for item in candidates])
+    atomic_write_json(approval_path, approval)
+    result = promote(config, review_path, approval_path)
+    result["status"] = "committed"
+    _notify_if_configured(config, result)
+    summary = {
+        "status": result["status"],
+        "promoted_count": result["promoted_count"],
+        "skipped_count": result["skipped_count"],
+    }
+    if "notification" in result:
+        summary["notification"] = result["notification"]
+    _print(summary)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "setup":
+            return _setup(args)
+
         if args.command == "login":
             _print(login_browser(timeout_seconds=args.timeout, channel=args.browser_channel))
             return 0
@@ -85,9 +253,15 @@ def main(argv: list[str] | None = None) -> int:
             _print(logout_browser(channel=args.browser_channel))
             return 0
 
-        if args.config is None:
-            raise ValueError(f"--config is required for {args.command}")
-        config = load_config(args.config)
+        config_path = (args.config or default_config_path()).expanduser().resolve()
+        if not config_path.exists():
+            raise ValueError("尚未完成配置，请先运行 douyin-favorites-knowledge setup")
+        config = load_config(config_path)
+        if args.command == "check-config":
+            _print(_config_summary(config))
+            return 0
+        if args.command == "sync":
+            return _sync(args, config)
         if args.command == "scan":
             if args.input:
                 raw_items = read_input(args.input)
@@ -104,15 +278,9 @@ def main(argv: list[str] | None = None) -> int:
                     channel=args.browser_channel,
                 )
                 default_source_label = "authorized_browser"
+            raw_items = _apply_configured_stages(list(raw_items), config)
             if args.enricher:
-                enricher = load_adapter(args.enricher)
-                enriched = []
-                for raw in raw_items:
-                    update = enricher(dict(raw), dict(config.raw))
-                    if not isinstance(update, dict):
-                        raise ValueError("enricher must return an object")
-                    enriched.append({**raw, **update})
-                raw_items = enriched
+                raw_items = _apply_enricher(raw_items, args.enricher, dict(config.raw))
             manifest = build_review(config, raw_items, args.source_label or default_source_label)
             result = {"status": "valid", **manifest["summary"], "review": str(args.review)}
             if not args.dry_run:
@@ -145,13 +313,16 @@ def main(argv: list[str] | None = None) -> int:
 
         result = promote(config, args.review, args.approval, dry_run=args.dry_run)
         result["status"] = "valid" if args.dry_run else "committed"
-        if args.notifier and not args.dry_run and result["promoted_count"]:
-            notifier = load_adapter(args.notifier)
-            notifier(dict(result), dict(config.raw))
+        configured = _configured_notifier(config)
+        notifier_spec = args.notifier or (configured[0] if configured else "")
+        notifier_context = dict(config.raw) if args.notifier else (configured[1] if configured else {})
+        if notifier_spec and not args.dry_run and result["promoted_count"]:
+            notifier = load_adapter(notifier_spec)
+            notifier(dict(result), notifier_context)
             result["notification"] = "sent"
         _print(result)
         return 0
-    except (ImportError, AttributeError, OSError, ValueError, sqlite3.Error) as exc:
+    except Exception as exc:
         print(f"ERROR: {safe_error_message(exc)}", file=sys.stderr)
         return 1
 

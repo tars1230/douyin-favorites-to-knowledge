@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "douyin-favorites-to-knowledge"
-version = "1.1.0"
-description = "Authorized browser collection and transactional promotion of Douyin favorites into local knowledge notes"
+version = "1.2.0"
+description = "Authorized Douyin favorites collection with optional transcription and analysis adapters"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

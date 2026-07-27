@@ -1,12 +1,130 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "douyin-favorites-to-knowledge config",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schema_version", "knowledge_dir", "ledger_path"],
-  "properties": {
-    "schema_version": {"const": 1},
-    "knowledge_dir": {"type": "string", "minLength": 1},
-    "ledger_path": {"type": "string", "minLength": 1}
-  }
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["schema_version", "knowledge_dir", "ledger_path"],
+      "properties": {
+        "knowledge_dir": {"type": "string", "minLength": 1},
+        "ledger_path": {"type": "string", "minLength": 1}
+      }
+    },
+    "disabledStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "provider"],
+      "properties": {
+        "enabled": {"const": false},
+        "provider": {"const": "none"}
+      }
+    },
+    "transcriptionStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "provider", "adapter"],
+      "properties": {
+        "enabled": {"const": true},
+        "provider": {"enum": ["local", "adapter"]},
+        "adapter": {"type": "string", "pattern": "^[^:]+:[^:]+$"},
+        "model": {"type": "string"},
+        "options": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provider": {"const": "local"}}},
+          "then": {"required": ["model"], "properties": {"model": {"minLength": 1}}}
+        }
+      ]
+    },
+    "analysisStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "provider", "adapter"],
+      "properties": {
+        "enabled": {"const": true},
+        "provider": {"enum": ["local", "minimax", "adapter"]},
+        "adapter": {"type": "string", "pattern": "^[^:]+:[^:]+$"},
+        "model": {"type": "string"},
+        "options": {"type": "object"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provider": {"enum": ["local", "minimax"]}}},
+          "then": {"required": ["model"], "properties": {"model": {"minLength": 1}}}
+        }
+      ]
+    },
+    "notificationStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "provider", "adapter"],
+      "properties": {
+        "enabled": {"const": true},
+        "provider": {"enum": ["feishu", "adapter"]},
+        "adapter": {"type": "string", "pattern": "^[^:]+:[^:]+$"},
+        "model": {"type": "string"},
+        "options": {"type": "object"}
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {"const": 1},
+            "knowledge_dir": {"type": "string", "minLength": 1},
+            "ledger_path": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {"const": 2},
+            "mode": {"enum": ["light", "full"]},
+            "knowledge_dir": {"type": "string", "minLength": 1},
+            "ledger_path": {"type": "string", "minLength": 1},
+            "transcription": {
+              "oneOf": [
+                {"$ref": "#/$defs/disabledStage"},
+                {"$ref": "#/$defs/transcriptionStage"}
+              ]
+            },
+            "analysis": {
+              "oneOf": [
+                {"$ref": "#/$defs/disabledStage"},
+                {"$ref": "#/$defs/analysisStage"}
+              ]
+            },
+            "notification": {
+              "oneOf": [
+                {"$ref": "#/$defs/disabledStage"},
+                {"$ref": "#/$defs/notificationStage"}
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"mode": {"const": "light"}}},
+              "then": {
+                "properties": {
+                  "transcription": {"$ref": "#/$defs/disabledStage"},
+                  "analysis": {"$ref": "#/$defs/disabledStage"},
+                  "notification": {"$ref": "#/$defs/disabledStage"}
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }

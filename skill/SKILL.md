@@ -1,97 +1,81 @@
 ---
 name: douyin-favorites-to-knowledge
-description: Collect an authorized user's Douyin favorites through a locally managed browser login, then review and idempotently promote them into Markdown knowledge notes. Use for first-time login, incremental favorites sync, JSON import, review, or local knowledge-base promotion; do not use to bypass login, access another account, or publish private data.
+description: 将用户已授权账号中的抖音收藏配置并同步到本地 Markdown 或 Obsidian 知识库；提供首次 setup、增量 sync、登录恢复、JSON 导入、局部审核，以及按需接入本地转录、MiniMax 或其他分析模型和飞书通知。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
 ---
 
-# Douyin Favorites to Knowledge
+# 抖音收藏转本地知识库
 
-Use the packaged CLI. Prefer its built-in browser collector; use JSON or custom adapters only when the user already has an authorized export or integration. Never ask the user to paste cookies.
+优先使用单入口流程。不要先向用户解释 schema、模式、provider 或 adapter。
 
-## Preconditions
+## 首次使用
 
-- The user is authorized to access the source favorites.
-- The collector complies with the platform terms and local law.
-- Browser state stays in the app-owned local profile; never print or export it.
-- Adapter credentials stay in the host environment or secret store.
-- The JSON config contains only output paths; secret-like keys are rejected.
-
-## Transaction
-
-### 1. Scan
-
-Create a candidate review manifest without changing notes or the ledger. With no source flag, `scan` uses the built-in browser collector. The first run opens Douyin for normal login and later runs reuse that local session:
+确认仓库已经安装后运行：
 
 ```bash
-douyin-favorites-knowledge --config config.json scan --review review.json
+douyin-favorites-knowledge setup
 ```
 
-For unattended runs, add `--no-login-prompt` so an expired login fails closed. Use `douyin-favorites-knowledge login`, `status`, or `logout` to manage the app-owned session explicitly. These commands do not need `--config`.
+让用户选择 Markdown 或 Obsidian 知识库目录。`setup` 生成默认轻量配置并打开抖音官方页面登录。不要要求用户复制 Cookie。
 
-For an authorized export, add `--input favorites.json`. For a custom integration, add `--collector module:function`. The collector receives the non-secret config object and returns iterable item objects. Add `--enricher module:function` only when enrichment is independently authorized.
-
-### 2. Review
-
-Validate hashes, schema, canonical source URLs, generated notes, duplicate IDs, and reasoning/secret leakage. Approval must be explicit:
+如果 Agent 在非交互环境执行，明确指定目录：
 
 ```bash
-douyin-favorites-knowledge --config config.json review \
-  --review review.json \
-  --approve-all \
-  --approval approval.json
+douyin-favorites-knowledge setup --knowledge-dir "用户确认的目录" --skip-login
 ```
 
-Use repeated `--approve <aweme_id>` for partial approval. Do not edit the review after approval; promotion verifies its SHA-256.
+随后让用户在自己的终端运行 `douyin-favorites-knowledge login` 完成网页登录。不要替用户猜测知识库目录。
 
-### 3. Promote
+## 日常同步
 
 ```bash
-douyin-favorites-knowledge --config config.json promote \
-  --review review.json \
-  --approval approval.json
+douyin-favorites-knowledge sync
 ```
 
-Promotion stages Markdown notes, atomically replaces final files, then commits immutable content hashes to SQLite. Repeating the same promotion is a no-op. Changed content for an already promoted ID is blocked for manual migration.
+`sync` 展示新增收藏并等待用户确认，然后完成审核、批准和原子入库。用户取消时不写知识库或账本。
 
-## Dry-run
-
-All three commands accept `--dry-run`. Dry-run performs validation and reports counts but does not write its stage artifact or mutate notes/ledger.
-
-## Blocking behavior
-
-Stop on:
-
-- `<think>` or `<analysis>` reasoning tags;
-- Unicode replacement characters, NUL bytes, or common live-secret patterns;
-- secret-like config keys;
-- malformed or duplicate IDs;
-- note/content hash mismatch;
-- approval hash mismatch;
-- changed content for an immutable promoted ID;
-- an untracked note file with conflicting content.
-
-Never convert these failures into warnings to keep automation moving.
-
-## Adapter contracts
-
-```python
-def collector(config: dict) -> list[dict]: ...
-def enricher(item: dict, config: dict) -> dict: ...
-def notifier(event: dict, config: dict) -> None: ...
-```
-
-The notifier runs after the local transaction commits. A notification failure does not mean the notes were rolled back; inspect the command error, then notify again without re-promoting changed data.
-
-## Browser boundary
-
-- Allow login only on the official Douyin page opened by the CLI.
-- Do not request, display, log, or store raw cookies outside the browser profile.
-- Treat `login_required`, response-shape changes, and stalled pagination as blocking failures, not empty success.
-- Do not point `DOUYIN_FAVORITES_PROFILE_DIR` at a daily browser profile or broad directory.
-
-## Verification
+只有用户明确要求无人值守自动同步时，才使用：
 
 ```bash
-python3 -m unittest discover -s tests -v
+douyin-favorites-knowledge sync --yes --no-login-prompt
 ```
 
-Fixture success proves the transaction and browser orchestration contracts. Live collection still depends on an authorized Douyin session and the platform's current web behavior.
+`--yes` 是批准全部新增的显式授权。不要私自创建 cron 或系统定时任务。
+
+## 故障处理
+
+先运行：
+
+```bash
+douyin-favorites-knowledge check-config
+douyin-favorites-knowledge status
+```
+
+- 未配置：运行 `setup`；
+- 登录过期：运行 `login`；
+- 无浏览器：安装 Playwright Chromium；
+- 无新增：把 `no_changes` 当作正常结果；
+- 想换目录：让用户确认后运行 `setup --force --knowledge-dir "新目录"`；
+- secret-like 配置错误：删除配置中的凭据，改从环境或 Secret Manager 读取。
+
+`check-config` 不输出本机路径、adapter 或凭据。不要请求或显示浏览器 profile 和 Cookie。
+
+## 进阶能力
+
+只有用户明确要求本地转录、MiniMax、其他模型、飞书通知、局部批准、JSON 导入或 adapter 调试时，才展开高级配置。
+
+- 默认轻量配置不下载模型、不要求 MiniMax；
+- 模型名按用户电脑实际能力配置；
+- 凭据只从环境变量、系统钥匙串或 Secret Manager 读取；
+- 当前仓库不内置视频下载器、模型安装器、MiniMax 客户端或飞书机器人；
+- 转录、分析和通知通过 `module:function` adapter 接入。
+
+原子命令 `scan -> review -> promote` 保留给局部审核和调试。批准必须明确；不得为了自动化把哈希、重复 ID、敏感信息或冲突文件错误降级为警告。
+
+## 验证
+
+```bash
+python3 -m compileall -q src tests
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+真实采集依赖有效的授权登录和抖音当前页面结构。fixture 通过只证明事务与编排契约。

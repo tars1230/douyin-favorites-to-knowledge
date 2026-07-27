@@ -1,5 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "mode": "light",
   "knowledge_dir": "../.runtime/knowledge",
-  "ledger_path": "../.runtime/state/ledger.sqlite3"
+  "ledger_path": "../.runtime/state/ledger.sqlite3",
+  "transcription": {
+    "enabled": false,
+    "provider": "none"
+  },
+  "analysis": {
+    "enabled": false,
+    "provider": "none"
+  },
+  "notification": {
+    "enabled": false,
+    "provider": "none"
+  }
 }

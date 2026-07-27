@@ -1,4 +1,4 @@
 interface:
-  display_name: "Douyin Favorites to Knowledge"
-  short_description: "Sync signed-in Douyin favorites into reviewed local notes"
-  default_prompt: "Use $douyin-favorites-to-knowledge to sign in locally, scan my authorized favorites, review them, and promote approved notes without exposing cookies."
+  display_name: "抖音收藏转本地知识库"
+  short_description: "首次配置后，一条命令把新增抖音收藏同步到本地知识库"
+  default_prompt: "使用 $douyin-favorites-to-knowledge 帮我完成首次配置，并把新增抖音收藏同步到本地知识库。"
