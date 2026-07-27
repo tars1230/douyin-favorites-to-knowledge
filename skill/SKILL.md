@@ -14,6 +14,14 @@ description: 将用户已授权账号中的抖音收藏，通过本地浏览器�
 
 MiniMax 不是必需项。本地模型名称因电脑而异，必须以用户实际可用模型为准。`provider` 记录选择，`adapter` 执行调用；不要声称仓库会自动下载视频、安装模型或配置飞书。
 
+首次安装时引导用户复制 `config/config.example.json` 为 `config/config.local.json`，只修改知识库路径，然后先运行：
+
+```bash
+douyin-favorites-knowledge --config config/config.local.json check-config
+```
+
+只有输出 `status: valid` 且 `mode: light` 后，才继续登录和首次扫描。提醒用户 `--config` 必须放在子命令前。完整模式应在轻量模式成功入库后再配置。
+
 ## 前置边界
 
 - 用户有权访问来源收藏，采集方式符合平台条款和当地法律。

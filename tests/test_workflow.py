@@ -277,6 +277,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(config.enrichment_stages(), ())
         self.assertFalse(config.notification.enabled)
 
+    def test_check_config_guides_setup_without_exposing_local_paths(self):
+        result = cli(self.config, "check-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "valid")
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["mode"], "light")
+        self.assertEqual(
+            payload["stages"],
+            {
+                "analysis": {"enabled": False, "provider": "none"},
+                "notification": {"enabled": False, "provider": "none"},
+                "transcription": {"enabled": False, "provider": "none"},
+            },
+        )
+        self.assertNotIn(str(self.root), result.stdout)
+        self.assertNotIn("ledger.sqlite3", result.stdout)
+
     def test_full_mode_runs_configured_stages_in_order(self):
         self.config.write_text(
             json.dumps(

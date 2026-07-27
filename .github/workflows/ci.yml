@@ -28,6 +28,7 @@ jobs:
           python -m venv /tmp/dftk-venv
           /tmp/dftk-venv/bin/pip install .
           /tmp/dftk-venv/bin/douyin-favorites-knowledge --help
+          /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json check-config
           /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json scan --input tests/fixtures/favorites.json --source-label ci_fixture --review .runtime/review.json
           /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json review --review .runtime/review.json --approve-all --approval .runtime/approval.json
           /tmp/dftk-venv/bin/douyin-favorites-knowledge --config config/config.example.json promote --review .runtime/review.json --approval .runtime/approval.json --dry-run

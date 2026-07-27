@@ -48,11 +48,50 @@
 
 ## 安装
 
+第一次使用请直接选择轻量模式。确认收藏能正常写入 Markdown 后，再考虑本地转录、MiniMax 或飞书通知。
+
+### 1. 下载项目
+
+安装了 Git 时运行：
+
+```bash
+git clone https://github.com/tars1230/douyin-favorites-to-knowledge.git
+cd douyin-favorites-to-knowledge
+```
+
+没有 Git 也可以在 GitHub 页面点击 **Code -> Download ZIP**，解压后在终端进入该目录。
+
+### 2. 创建 Python 环境
+
+需要 Python 3.10 或更高版本，先确认版本：
+
+```bash
+python3 --version
+```
+
+macOS / Linux：
+
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install .
 ```
+
+Windows PowerShell：
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install .
+```
+
+安装完成后，这条命令应能显示帮助：
+
+```bash
+douyin-favorites-knowledge --help
+```
+
+### 3. 准备浏览器
 
 系统会优先使用 Chrome 或 Edge。两者都没有时，安装一次 Playwright Chromium：
 
@@ -60,15 +99,31 @@ python -m pip install .
 python -m playwright install chromium
 ```
 
-需要在 Codex 中调用 Skill 时，再安装 Skill 目录：
+### 4. 可选安装 Codex Skill
+
+只使用命令行时可以跳过。需要在 Codex 中调用本项目时再安装：
 
 ```bash
 cp -R skill ~/.codex/skills/douyin-favorites-to-knowledge
 ```
 
-## 轻量模式快速开始
+## 第一次入库
 
-复制 [config/config.example.json](config/config.example.json) 后修改知识库位置。默认配置已经是轻量模式：
+### 1. 创建自己的配置
+
+不要直接修改示例文件。macOS / Linux：
+
+```bash
+cp config/config.example.json config/config.local.json
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item config/config.example.json config/config.local.json
+```
+
+`config/config.local.json` 已加入 `.gitignore`，不会被意外提交。默认配置已经是轻量模式：
 
 ```json
 {
@@ -82,26 +137,83 @@ cp -R skill ~/.codex/skills/douyin-favorites-to-knowledge
 }
 ```
 
-第一次扫描会打开浏览器，正常登录抖音即可：
+只需要先修改 `knowledge_dir`：
+
+- 普通 Markdown 知识库：填写你准备存放笔记的目录；
+- Obsidian：填写 Vault 里的一个独立子目录；
+- 相对路径以配置文件所在目录为基准，也可以使用绝对路径；
+- `ledger_path` 是防重复入库的本地账本，通常保持默认即可。
+
+### 2. 检查配置
 
 ```bash
-douyin-favorites-knowledge --config config/config.example.json scan \
-  --review .runtime/review.json
+douyin-favorites-knowledge --config config/config.local.json check-config
+```
 
-douyin-favorites-knowledge --config config/config.example.json review \
+首次使用应看到类似结果：
+
+```json
+{
+  "mode": "light",
+  "schema_version": 2,
+  "stages": {
+    "analysis": {"enabled": false, "provider": "none"},
+    "notification": {"enabled": false, "provider": "none"},
+    "transcription": {"enabled": false, "provider": "none"}
+  },
+  "status": "valid"
+}
+```
+
+这条命令不会输出 Cookie、配置路径、知识库路径或 adapter 名称。注意：`--config` 必须写在 `check-config`、`scan`、`review`、`promote` 等子命令之前。
+
+### 3. 登录抖音
+
+```bash
+douyin-favorites-knowledge login
+```
+
+浏览器会打开抖音官方页面。正常登录后，终端返回 `authenticated`。后续运行会复用这个独立本地会话。
+
+### 4. 扫描新增收藏
+
+```bash
+douyin-favorites-knowledge --config config/config.local.json scan \
+  --review .runtime/review.json
+```
+
+返回 `status: written` 表示待审核清单已经生成。`candidate_count` 是本次等待审核的新增数量；为 `0` 时不会生成可批准内容。
+
+### 5. 批准并写入知识库
+
+确认 review 内容后批准全部条目：
+
+```bash
+douyin-favorites-knowledge --config config/config.local.json review \
   --review .runtime/review.json \
   --approve-all \
   --approval .runtime/approval.json
 
-douyin-favorites-knowledge --config config/config.example.json promote \
+douyin-favorites-knowledge --config config/config.local.json promote \
   --review .runtime/review.json \
   --approval .runtime/approval.json
 ```
 
-也可以单独管理登录状态：
+返回 `status: committed` 后，打开 `knowledge_dir`：每条批准收藏应有一份 `.md` 文件。再次运行同一批内容时，`promoted_count` 为 `0`，不会重复入库。
+
+需要只批准部分内容时，不使用 `--approve-all`，改为重复指定 ID：
 
 ```bash
-douyin-favorites-knowledge login
+douyin-favorites-knowledge --config config/config.local.json review \
+  --review .runtime/review.json \
+  --approve 7000000000000000001 \
+  --approve 7000000000000000002 \
+  --approval .runtime/approval.json
+```
+
+登录状态管理：
+
+```bash
 douyin-favorites-knowledge status
 douyin-favorites-knowledge logout
 ```
@@ -110,7 +222,14 @@ douyin-favorites-knowledge logout
 
 ## 完整模式配置
 
-下面只展示结构。adapter 名称和模型名要替换成你电脑上实际可用的实现：
+完整模式是进阶功能。启用前先确认：
+
+1. 轻量模式已经成功完成一次入库；
+2. 对应 adapter 已安装在当前虚拟环境，能通过 `module:function` 导入；
+3. 本地模型或云端模型名称真实可用；
+4. API key、飞书密钥等已经放进环境变量、系统钥匙串或 Secret Manager。
+
+下面只展示结构。adapter 名称和模型名必须替换成当前电脑上真实可用的实现：
 
 ```json
 {
@@ -139,6 +258,8 @@ douyin-favorites-knowledge logout
 ```
 
 每个阶段都可以独立关闭或换成 `adapter`。使用本地模型时，`model` 写本机实际模型；使用 MiniMax 时，`model` 写账号可用模型。API key、飞书密钥和其他凭据只允许从环境变量、系统钥匙串或宿主 Secret Manager 读取，配置文件中的 secret、token、password、cookie、credential 和 API key 类字段会被拒绝。
+
+修改后再次运行 `check-config`。它只验证配置契约；adapter 能否连接模型或飞书，仍要由对应 adapter 自己提供连接测试。
 
 ## Adapter 契约
 
@@ -188,6 +309,21 @@ douyin-favorites-knowledge --config config.json promote \
 | `observed_at` | 否 | 采集时间 |
 
 输出是普通 Markdown 文件，因此 `knowledge_dir` 可以直接指向 Obsidian Vault 中的一个独立目录。项目不修改 Obsidian 设置，也不要求安装 Obsidian 插件。
+
+## 常见问题
+
+| 现象 | 怎么处理 |
+|---|---|
+| `--config is required` | 把 `--config config/config.local.json` 放在子命令前面 |
+| `config ... must` 或 `unknown config fields` | 先对照示例恢复字段，再运行 `check-config` |
+| `secret-like key blocked` | 从 JSON 删除密钥、Cookie 或 token，改从环境变量或密钥管理器读取 |
+| 找不到 Chrome、Edge 或 Chromium | 运行 `python -m playwright install chromium` |
+| 返回 `login_required` | 运行 `douyin-favorites-knowledge login` 重新登录 |
+| `candidate_count` 为 `0` | 当前没有未入库的新收藏；这不是错误 |
+| 完整模式提示缺少 `adapter` 或 `model` | 暂时切回 `light`，或先安装并验证对应 adapter 和模型 |
+| adapter 连接 MiniMax、飞书或本地模型失败 | 检查该 adapter 的环境变量、模型名称和连接测试；核心不会读取其凭据 |
+
+仍无法判断时，依次保留 `check-config` 输出、执行命令和脱敏后的 `ERROR:` 文本。不要提交浏览器 profile、Cookie 或配置外的密钥文件。
 
 ## 隐私与安全边界
 

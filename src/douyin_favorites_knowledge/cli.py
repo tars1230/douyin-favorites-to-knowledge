@@ -20,52 +20,69 @@ from .workflow import (
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Promote reviewed Douyin favorites into local knowledge notes")
-    root.add_argument("--config", type=Path, help="Path to schema_version=1 or 2 JSON config")
+    root = argparse.ArgumentParser(description="将审核通过的抖音收藏写入本地知识库")
+    root.add_argument("--config", type=Path, help="schema_version 为 1 或 2 的 JSON 配置路径")
     commands = root.add_subparsers(dest="command", required=True)
 
-    login = commands.add_parser("login", help="Open a local browser and save an authorized session")
-    login.add_argument("--timeout", type=int, default=300, help="Seconds to wait for login")
-    login.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
+    login = commands.add_parser("login", help="打开本地浏览器并保存授权登录状态")
+    login.add_argument("--timeout", type=int, default=300, help="等待登录的秒数")
+    login.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
-    status = commands.add_parser("status", help="Check the saved browser session without exposing it")
-    status.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
+    status = commands.add_parser("status", help="检查已保存的浏览器登录状态，不输出会话内容")
+    status.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
-    logout = commands.add_parser("logout", help="Clear the locally saved Douyin browser session")
-    logout.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
+    logout = commands.add_parser("logout", help="清除本地保存的抖音浏览器会话")
+    logout.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
-    scan = commands.add_parser("scan", help="Create a non-mutating review manifest")
+    commands.add_parser("check-config", help="检查配置并显示已启用模式，不输出敏感信息")
+
+    scan = commands.add_parser("scan", help="生成待审核清单，不修改知识库")
     source = scan.add_mutually_exclusive_group()
-    source.add_argument("--input", type=Path, help="JSON list or object containing items")
-    source.add_argument("--collector", help="Collector adapter in module:function format")
-    source.add_argument("--browser", action="store_true", help="Use the built-in authorized browser collector")
-    scan.add_argument("--enricher", help="Optional per-item enricher adapter in module:function format")
-    scan.add_argument("--source-label", help="Non-sensitive source label stored in the manifest")
-    scan.add_argument("--review", type=Path, required=True, help="Review manifest output")
-    scan.add_argument("--max-items", type=int, default=200, help="Maximum browser items to collect")
-    scan.add_argument("--headed", action="store_true", help="Keep the collection browser visible")
-    scan.add_argument("--no-login-prompt", action="store_true", help="Fail instead of opening login")
-    scan.add_argument("--browser-channel", help="Playwright channel such as chrome or msedge")
-    scan.add_argument("--dry-run", action="store_true", help="Validate and summarize without writing")
+    source.add_argument("--input", type=Path, help="包含收藏条目的 JSON 列表或对象")
+    source.add_argument("--collector", help="module:function 格式的 collector adapter")
+    source.add_argument("--browser", action="store_true", help="使用内置授权浏览器 collector")
+    scan.add_argument("--enricher", help="可选的单条内容增强 adapter，格式为 module:function")
+    scan.add_argument("--source-label", help="写入审核清单的非敏感来源标签")
+    scan.add_argument("--review", type=Path, required=True, help="待审核清单输出路径")
+    scan.add_argument("--max-items", type=int, default=200, help="浏览器单次最多采集条数")
+    scan.add_argument("--headed", action="store_true", help="采集时保持浏览器可见")
+    scan.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
+    scan.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+    scan.add_argument("--dry-run", action="store_true", help="只校验和汇总，不写入文件")
 
-    review = commands.add_parser("review", help="Validate a review and optionally create explicit approval")
+    review = commands.add_parser("review", help="校验待审核清单，并按明确选择生成批准文件")
     review.add_argument("--review", type=Path, required=True)
     review.add_argument("--approval", type=Path)
     selection = review.add_mutually_exclusive_group()
     selection.add_argument("--approve-all", action="store_true")
     selection.add_argument("--approve", action="append", default=[], metavar="AWEME_ID")
-    review.add_argument("--dry-run", action="store_true", help="Validate selection without writing approval")
+    review.add_argument("--dry-run", action="store_true", help="只校验批准选择，不写入批准文件")
 
-    promote_cmd = commands.add_parser("promote", help="Atomically write approved notes and ledger entries")
+    promote_cmd = commands.add_parser("promote", help="原子写入已批准笔记和防重账本")
     promote_cmd.add_argument("--review", type=Path, required=True)
     promote_cmd.add_argument("--approval", type=Path, required=True)
-    promote_cmd.add_argument("--notifier", help="Optional post-commit notifier in module:function format")
-    promote_cmd.add_argument("--dry-run", action="store_true", help="Validate transaction without writing")
+    promote_cmd.add_argument("--notifier", help="提交后可选通知 adapter，格式为 module:function")
+    promote_cmd.add_argument("--dry-run", action="store_true", help="只校验事务，不写入知识库")
     return root
 
 
 def _print(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _config_summary(config: Config) -> dict:
+    stages = {}
+    for stage in (config.transcription, config.analysis, config.notification):
+        status = {"enabled": stage.enabled, "provider": stage.provider}
+        if stage.model:
+            status["model"] = stage.model
+        stages[stage.name] = status
+    return {
+        "status": "valid",
+        "schema_version": config.raw["schema_version"],
+        "mode": config.mode,
+        "stages": stages,
+    }
 
 
 def _apply_enricher(raw_items: list[dict], spec: str, context: dict) -> list[dict]:
@@ -116,6 +133,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.config is None:
             raise ValueError(f"--config is required for {args.command}")
         config = load_config(args.config)
+        if args.command == "check-config":
+            _print(_config_summary(config))
+            return 0
         if args.command == "scan":
             if args.input:
                 raw_items = read_input(args.input)
