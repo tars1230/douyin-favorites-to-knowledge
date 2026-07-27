@@ -18,6 +18,7 @@ sys.path.insert(0, PYTHONPATH)
 
 from douyin_favorites_knowledge.security import safe_error_message  # noqa: E402
 from douyin_favorites_knowledge.cli import main  # noqa: E402
+from douyin_favorites_knowledge.config import load_config  # noqa: E402
 
 
 def cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -269,6 +270,220 @@ class WorkflowTests(unittest.TestCase):
         result = self.scan()
         self.assertEqual(result.returncode, 1)
         self.assertIn("secret-like key blocked", result.stderr)
+
+    def test_schema_v1_config_remains_light_mode_compatible(self):
+        config = load_config(self.config)
+        self.assertEqual(config.mode, "light")
+        self.assertEqual(config.enrichment_stages(), ())
+        self.assertFalse(config.notification.enabled)
+
+    def test_full_mode_runs_configured_stages_in_order(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "transcription": {
+                        "enabled": True,
+                        "provider": "local",
+                        "adapter": "example.pipeline:transcribe",
+                        "model": "user-selected-asr",
+                    },
+                    "analysis": {
+                        "enabled": True,
+                        "provider": "minimax",
+                        "adapter": "example.pipeline:analyze",
+                        "model": "user-selected-analysis-model",
+                    },
+                    "notification": {"enabled": False, "provider": "none"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        calls = []
+
+        def load(spec):
+            if spec.endswith(":transcribe"):
+                def transcribe(item, context):
+                    calls.append((context["stage"], context["provider"], context["model"]))
+                    return {"transcript": "本地转录结果"}
+
+                return transcribe
+
+            def analyze(item, context):
+                calls.append((context["stage"], context["provider"], context["model"]))
+                self.assertEqual(item["transcript"], "本地转录结果")
+                return {"tags": ["自动分析"]}
+
+            return analyze
+
+        output = StringIO()
+        with patch("douyin_favorites_knowledge.cli.load_adapter", side_effect=load), redirect_stdout(output):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "scan",
+                    "--input",
+                    str(FIXTURE),
+                    "--review",
+                    str(self.review),
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(
+            calls,
+            [
+                ("transcription", "local", "user-selected-asr"),
+                ("transcription", "local", "user-selected-asr"),
+                ("analysis", "minimax", "user-selected-analysis-model"),
+                ("analysis", "minimax", "user-selected-analysis-model"),
+            ],
+        )
+        review = json.loads(self.review.read_text(encoding="utf-8"))
+        self.assertEqual(review["items"][0]["transcript"], "本地转录结果")
+        self.assertEqual(review["items"][0]["tags"], ["自动分析"])
+
+    def test_light_mode_rejects_enabled_optional_stage(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "light",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "analysis": {
+                        "enabled": True,
+                        "provider": "adapter",
+                        "adapter": "example.pipeline:analyze",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("light mode cannot enable optional stages", result.stderr)
+
+    def test_provider_credentials_cannot_be_written_to_config(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "analysis": {
+                        "enabled": True,
+                        "provider": "minimax",
+                        "adapter": "example.pipeline:analyze",
+                        "model": "example-model",
+                        "options": {"api_key": "placeholder"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("secret-like key blocked", result.stderr)
+
+    def test_invalid_provider_type_is_reported_without_traceback(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "analysis": {"enabled": True, "provider": ["minimax"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unsupported analysis provider", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_invalid_schema_version_type_is_reported_without_traceback(self):
+        payload = json.loads(self.config.read_text(encoding="utf-8"))
+        payload["schema_version"] = [2]
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("schema_version must be 1 or 2", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_adapter_runtime_error_is_redacted(self):
+        token = "sk-" + "A" * 24
+        output = StringIO()
+        errors = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.load_adapter",
+            return_value=lambda item, context: (_ for _ in ()).throw(RuntimeError(token)),
+        ), redirect_stdout(output), patch("sys.stderr", errors):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "scan",
+                    "--input",
+                    str(FIXTURE),
+                    "--enricher",
+                    "example.pipeline:enrich",
+                    "--review",
+                    str(self.review),
+                ]
+            )
+        self.assertEqual(returncode, 1)
+        self.assertNotIn(token, errors.getvalue())
+        self.assertIn("[REDACTED]", errors.getvalue())
+        self.assertFalse(self.review.exists())
+
+    def test_configured_notifier_receives_stage_context(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "notification": {
+                        "enabled": True,
+                        "provider": "feishu",
+                        "adapter": "example.pipeline:notify",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        seen = []
+
+        def notifier(event, context):
+            seen.append((event["promoted_count"], context))
+
+        output = StringIO()
+        with patch("douyin_favorites_knowledge.cli.load_adapter", return_value=notifier), redirect_stdout(output):
+            returncode = main(
+                [
+                    "--config",
+                    str(self.config),
+                    "promote",
+                    "--review",
+                    str(self.review),
+                    "--approval",
+                    str(self.approval),
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(seen[0][0], 2)
+        self.assertEqual(seen[0][1]["stage"], "notification")
+        self.assertEqual(seen[0][1]["provider"], "feishu")
 
     def test_concurrent_promotions_serialize(self):
         self.assertEqual(self.scan().returncode, 0)

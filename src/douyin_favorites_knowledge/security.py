@@ -12,7 +12,10 @@ BLOCKED_PATTERNS = {
     "Apify token": re.compile(r"apify_api_[A-Za-z0-9_-]{20,}"),
 }
 
-SECRET_KEY = re.compile(r"(?:token|secret|password|cookie|credential|api[_-]?key)", re.IGNORECASE)
+SECRET_KEY = re.compile(
+    r"(?:token|secret|password|cookie|credential|api[_-]?key|access[_-]?key|private[_-]?key|authorization)",
+    re.IGNORECASE,
+)
 PRIVATE_PATH = re.compile(r"(?:/Users/|/home/)[^\s:]+")
 
 

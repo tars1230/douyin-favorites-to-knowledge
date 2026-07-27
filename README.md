@@ -1,33 +1,52 @@
-# Douyin Favorites to Knowledge
+# 抖音收藏转本地知识库
 
-Turn your authorized Douyin favorites into reviewed local Markdown notes. The built-in browser collector handles first-run login without asking you to copy or configure cookies.
+把自己账号里新增的抖音收藏，整理成经过审核、可重复运行的本地 Markdown 知识笔记。首次使用会打开抖音官方页面登录，之后复用独立的本地浏览器会话；不用复制 Cookie，Cookie 也不会写进配置、笔记或日志。
 
 [![CI](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml/badge.svg)](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-This project accesses only the favorites of the account that you explicitly sign into. It does not bypass login or platform access controls.
+本项目只访问你主动登录账号后有权查看的收藏内容，不绕过登录和平台访问控制。
 
-## Design
+## 两种模式
+
+| 模式 | 适合谁 | 默认行为 |
+|---|---|---|
+| 轻量模式 `light` | 先把收藏稳定沉淀到本地的人 | 登录、扫描、人工批准、写入 Markdown 和 SQLite 账本 |
+| 完整模式 `full` | 已有转录、分析或通知能力的人 | 在轻量流程上，按顺序调用可选的转录、分析和通知 adapter |
+
+轻量模式是默认项，不下载大模型，也不要求 MiniMax。完整模式允许按电脑实际情况选择：
+
+- 转录：本地语音模型或自定义 adapter；
+- 分析：本地模型、MiniMax 或其他 adapter；
+- 通知：飞书或其他 adapter。
+
+`provider` 只是明确记录你选择的能力来源，真正调用由 `module:function` adapter 完成。当前仓库没有内置抖音视频下载器、模型自动安装器、MiniMax 客户端或飞书机器人，因此不会把这些外部能力伪装成开箱即用。这样可以避免绑定某一台电脑、某一个模型和某一种通知服务。
+
+## 工作流程
 
 ```text
-authorized browser session, export, or adapter
-              |
-              v
-        scan -> review.json
+官方页面登录 -> 扫描收藏
+                    |
+                    +-> 可选转录 -> 可选分析
                     |
                     v
-        review -> approval.json
+              review.json
+                    |
+              明确批准内容
                     |
                     v
-        promote -> Markdown notes + SQLite ledger
+        Markdown 笔记 + SQLite 幂等账本
+                    |
+                    +-> 可选通知
 ```
 
-- `scan` normalizes source items, derives canonical Douyin URLs, blocks leakage, compares the immutable ledger, and writes no knowledge notes.
-- `review` revalidates every content hash and generated note, then requires explicit full or partial approval.
-- `promote` verifies the exact review SHA-256, stages approved notes, atomically replaces each file, and commits idempotency records.
+- `scan` 只生成待审核清单，不改知识库；
+- `review` 重新校验内容哈希，并要求明确批准全部或部分条目；
+- `promote` 校验审核文件未被修改，再原子写入笔记和账本；
+- 同一批内容重复运行不会重复入库，已入库内容发生变化时会停止并要求人工迁移。
 
-## Install
+## 安装
 
 ```bash
 python3 -m venv .venv
@@ -35,21 +54,35 @@ python3 -m venv .venv
 python -m pip install .
 ```
 
-Chrome or Edge is used when available. If neither is installed, install Playwright Chromium once:
+系统会优先使用 Chrome 或 Edge。两者都没有时，安装一次 Playwright Chromium：
 
 ```bash
 python -m playwright install chromium
 ```
 
-Install the Agent Skill separately when needed:
+需要在 Codex 中调用 Skill 时，再安装 Skill 目录：
 
 ```bash
 cp -R skill ~/.codex/skills/douyin-favorites-to-knowledge
 ```
 
-## First sync
+## 轻量模式快速开始
 
-Create a config from [config/config.example.json](config/config.example.json), then run `scan`. On the first run, a local browser opens for normal Douyin login. Later runs reuse that app-owned browser session.
+复制 [config/config.example.json](config/config.example.json) 后修改知识库位置。默认配置已经是轻量模式：
+
+```json
+{
+  "schema_version": 2,
+  "mode": "light",
+  "knowledge_dir": "../.runtime/knowledge",
+  "ledger_path": "../.runtime/state/ledger.sqlite3",
+  "transcription": {"enabled": false, "provider": "none"},
+  "analysis": {"enabled": false, "provider": "none"},
+  "notification": {"enabled": false, "provider": "none"}
+}
+```
+
+第一次扫描会打开浏览器，正常登录抖音即可：
 
 ```bash
 douyin-favorites-knowledge --config config/config.example.json scan \
@@ -65,7 +98,7 @@ douyin-favorites-knowledge --config config/config.example.json promote \
   --approval .runtime/approval.json
 ```
 
-The login can also be managed explicitly:
+也可以单独管理登录状态：
 
 ```bash
 douyin-favorites-knowledge login
@@ -73,122 +106,116 @@ douyin-favorites-knowledge status
 douyin-favorites-knowledge logout
 ```
 
-`login`, `status`, and `logout` never print cookie values or require a config file. For unattended jobs, add `--no-login-prompt` to `scan` so an expired session fails instead of opening a browser.
+无人值守任务可在 `scan` 后加 `--no-login-prompt`。登录过期时任务会明确失败，不会把“没抓到内容”误判成“没有新增收藏”。
 
-## Quick fixture E2E
+## 完整模式配置
 
-Keep runtime state outside the repository when using real data. The included example deliberately writes to ignored `.runtime/` paths.
+下面只展示结构。adapter 名称和模型名要替换成你电脑上实际可用的实现：
 
-```bash
-douyin-favorites-knowledge --config config/config.example.json scan \
-  --input tests/fixtures/favorites.json \
-  --source-label synthetic_fixture \
-  --review .runtime/review.json
-
-douyin-favorites-knowledge --config config/config.example.json review \
-  --review .runtime/review.json \
-  --approve-all \
-  --approval .runtime/approval.json
-
-douyin-favorites-knowledge --config config/config.example.json promote \
-  --review .runtime/review.json \
-  --approval .runtime/approval.json \
-  --dry-run
-
-douyin-favorites-knowledge --config config/config.example.json promote \
-  --review .runtime/review.json \
-  --approval .runtime/approval.json
+```json
+{
+  "schema_version": 2,
+  "mode": "full",
+  "knowledge_dir": "../.runtime/knowledge",
+  "ledger_path": "../.runtime/state/ledger.sqlite3",
+  "transcription": {
+    "enabled": true,
+    "provider": "local",
+    "adapter": "my_pipeline:transcribe",
+    "model": "my-local-asr-model"
+  },
+  "analysis": {
+    "enabled": true,
+    "provider": "minimax",
+    "adapter": "my_pipeline:analyze",
+    "model": "my-minimax-model"
+  },
+  "notification": {
+    "enabled": true,
+    "provider": "feishu",
+    "adapter": "my_pipeline:notify"
+  }
+}
 ```
 
-Run the last command again: it succeeds with `promoted_count: 0` and `skipped_count: 2`.
+每个阶段都可以独立关闭或换成 `adapter`。使用本地模型时，`model` 写本机实际模型；使用 MiniMax 时，`model` 写账号可用模型。API key、飞书密钥和其他凭据只允许从环境变量、系统钥匙串或宿主 Secret Manager 读取，配置文件中的 secret、token、password、cookie、credential 和 API key 类字段会被拒绝。
 
-## Input schema
+## Adapter 契约
 
-The input is a JSON list, or an object with an `items` list. Each item accepts:
-
-| Field | Required | Behavior |
-|---|---|---|
-| `aweme_id` | yes | 6-30 digits; becomes the immutable identity |
-| `title` or `description` | yes | At least one must be non-empty |
-| `author` | no | Stored as public source metadata |
-| `description` | no | Included in the note |
-| `transcript` | no | Included only after leakage checks |
-| `tags` | no | Non-empty strings, deduplicated and sorted |
-| `observed_at` | no | Caller-supplied provenance timestamp |
-| `source_url` | ignored | Replaced with `https://www.douyin.com/video/<aweme_id>` |
-
-Unknown source fields are not copied into notes. Query parameters, cookies, and collector-specific metadata therefore do not leak through by default.
-
-## Browser privacy
-
-- Login happens on Douyin's website in a dedicated local browser profile.
-- Raw cookies are not accepted as CLI arguments or config fields and are never written to review files or notes.
-- The default profile is stored under the operating system's application-state directory, outside the repository.
-- `logout` clears the saved browser session. Uninstalling the Python package does not silently delete user data.
-- Douyin can expire a session or change its private web response shape. The collector fails closed and asks for login or an update instead of treating that failure as an empty collection.
-
-Use `DOUYIN_FAVORITES_PROFILE_DIR` only when you need to relocate the app-owned profile. Do not point it at a daily browser profile or a broad directory.
-
-## Adapters
-
-Use `module:function` specs:
+配置中的转录和分析 adapter 会依次收到单条收藏与当前阶段上下文：
 
 ```python
-def collector(config: dict) -> list[dict]:
-    ...
+def transcribe(item: dict, context: dict) -> dict:
+    # context: mode、stage、provider、model、options
+    return {"transcript": "..."}
 
-def enricher(item: dict, config: dict) -> dict:
-    ...
+def analyze(item: dict, context: dict) -> dict:
+    return {"tags": ["主题"], "description": "..."}
 
-def notifier(event: dict, config: dict) -> None:
+def notify(event: dict, context: dict) -> None:
+    # 仅在本地事务提交成功后调用
     ...
 ```
 
-The config accepts output paths only and rejects secret-like keys. Adapters must read credentials from their host environment or secret manager. The notifier runs after commit, so a notifier error means local promotion may already be complete.
+Adapter 不得修改 `aweme_id`，传入的 `source_url` 也不会覆盖系统生成的规范地址。如果转录需要下载视频，adapter 必须使用已授权会话、限制临时文件范围并在完成后清理；核心仓库目前不负责下载视频。
 
-## Safety gates
+原有命令行扩展仍然可用：
 
-The pipeline blocks before promotion on:
+```bash
+douyin-favorites-knowledge --config config.json scan \
+  --enricher my_module:enrich \
+  --review review.json
 
-- `<think>` / `<analysis>` reasoning tags;
-- Unicode replacement characters and NUL bytes;
-- common live-secret token shapes;
-- secret-like config keys;
-- invalid or conflicting duplicate IDs;
-- modified notes or content hashes;
-- a review changed after approval;
-- changed content for an already promoted ID;
-- conflicting untracked note files.
+douyin-favorites-knowledge --config config.json promote \
+  --review review.json \
+  --approval approval.json \
+  --notifier my_module:notify
+```
 
-Text scanning cannot detect secrets rendered inside screenshots or video. This core intentionally writes text notes only.
+命令行 `--notifier` 会覆盖配置中的通知 adapter。
 
-## Dry-run and recovery
+## 输入与 Obsidian
 
-Every command supports `--dry-run` and avoids writes for that stage.
+浏览器收藏、授权导出的 JSON 和自定义 collector 最终都会归一成同一结构。至少需要：
 
-- If scan fails, fix the source or adapter and rerun; notes and ledger were untouched.
-- If review fails, discard the approval candidate and fix the manifest source.
-- If promote is interrupted after a note replacement but before ledger commit, rerun the same review and approval. Identical orphan notes are accepted; conflicting notes are blocked.
-- Do not edit a promoted item in place. Use a separately reviewed migration process for changed content.
+| 字段 | 必需 | 说明 |
+|---|---|---|
+| `aweme_id` | 是 | 6 到 30 位数字，作为不可变 ID |
+| `title` 或 `description` | 是 | 至少一个非空 |
+| `author` | 否 | 作者公开信息 |
+| `transcript` | 否 | 转录文本，通过安全检查后写入笔记 |
+| `tags` | 否 | 去重并排序的标签 |
+| `observed_at` | 否 | 采集时间 |
 
-## Test
+输出是普通 Markdown 文件，因此 `knowledge_dir` 可以直接指向 Obsidian Vault 中的一个独立目录。项目不修改 Obsidian 设置，也不要求安装 Obsidian 插件。
+
+## 隐私与安全边界
+
+- 登录发生在 CLI 打开的抖音官方页面中；
+- 浏览器状态保存在系统应用数据目录下的独立 profile；
+- Cookie 不会作为命令行参数或配置字段，也不会进入 review、笔记和日志；
+- `logout` 会清除保存的浏览器会话；卸载 Python 包不会擅自删除知识库和账本；
+- 推理标签、NUL、常见密钥格式、可疑配置字段、重复 ID、哈希篡改和冲突文件都会阻止入库；
+- 文本扫描无法识别截图或视频画面中的秘密，本核心只写文本笔记。
+
+## 验证
 
 ```bash
 python3 -m compileall -q src tests
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-CI also installs the built wheel into a fresh virtual environment and runs the fixture transaction through the console command.
+CI 还会把构建后的包安装到全新虚拟环境，并执行一次完整的 fixture 事务。
 
-## Uninstall
+## 卸载
 
 ```bash
 douyin-favorites-knowledge logout
 python -m pip uninstall douyin-favorites-to-knowledge
 ```
 
-Uninstalling the package intentionally does not delete your configured knowledge directory, SQLite ledger, or browser profile. Remove those data paths only after backing them up and verifying the exact target.
+知识库、SQLite 账本和浏览器 profile 都属于用户数据，不会随包卸载自动删除。
 
-## License
+## 许可证
 
 [MIT](LICENSE)

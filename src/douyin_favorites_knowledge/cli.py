@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
 from .adapters import load_adapter
 from .browser_collector import browser_status, collect_browser_favorites, login_browser, logout_browser
-from .config import load_config
+from .config import Config, StageConfig, load_config
 from .security import safe_error_message
 from .workflow import (
     atomic_write_json,
@@ -22,7 +21,7 @@ from .workflow import (
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Promote reviewed Douyin favorites into local knowledge notes")
-    root.add_argument("--config", type=Path, help="Path to schema_version=1 JSON config")
+    root.add_argument("--config", type=Path, help="Path to schema_version=1 or 2 JSON config")
     commands = root.add_subparsers(dest="command", required=True)
 
     login = commands.add_parser("login", help="Open a local browser and save an authorized session")
@@ -69,6 +68,35 @@ def _print(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
+def _apply_enricher(raw_items: list[dict], spec: str, context: dict) -> list[dict]:
+    enricher = load_adapter(spec)
+    enriched = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            raise ValueError("each source item must be an object before enrichment")
+        update = enricher(dict(raw), dict(context))
+        if not isinstance(update, dict):
+            raise ValueError("enricher must return an object")
+        if "aweme_id" in update and str(update["aweme_id"]) != str(raw.get("aweme_id", "")):
+            raise ValueError("enricher cannot change aweme_id")
+        update.pop("source_url", None)
+        enriched.append({**raw, **update})
+    return enriched
+
+
+def _apply_configured_stages(raw_items: list[dict], config: Config) -> list[dict]:
+    for stage in config.enrichment_stages():
+        raw_items = _apply_enricher(raw_items, stage.adapter, stage.context(config.mode))
+    return raw_items
+
+
+def _configured_notifier(config: Config) -> tuple[str, dict] | None:
+    stage: StageConfig = config.notification
+    if not stage.enabled:
+        return None
+    return stage.adapter, stage.context(config.mode)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -104,15 +132,9 @@ def main(argv: list[str] | None = None) -> int:
                     channel=args.browser_channel,
                 )
                 default_source_label = "authorized_browser"
+            raw_items = _apply_configured_stages(list(raw_items), config)
             if args.enricher:
-                enricher = load_adapter(args.enricher)
-                enriched = []
-                for raw in raw_items:
-                    update = enricher(dict(raw), dict(config.raw))
-                    if not isinstance(update, dict):
-                        raise ValueError("enricher must return an object")
-                    enriched.append({**raw, **update})
-                raw_items = enriched
+                raw_items = _apply_enricher(raw_items, args.enricher, dict(config.raw))
             manifest = build_review(config, raw_items, args.source_label or default_source_label)
             result = {"status": "valid", **manifest["summary"], "review": str(args.review)}
             if not args.dry_run:
@@ -145,13 +167,16 @@ def main(argv: list[str] | None = None) -> int:
 
         result = promote(config, args.review, args.approval, dry_run=args.dry_run)
         result["status"] = "valid" if args.dry_run else "committed"
-        if args.notifier and not args.dry_run and result["promoted_count"]:
-            notifier = load_adapter(args.notifier)
-            notifier(dict(result), dict(config.raw))
+        configured = _configured_notifier(config)
+        notifier_spec = args.notifier or (configured[0] if configured else "")
+        notifier_context = dict(config.raw) if args.notifier else (configured[1] if configured else {})
+        if notifier_spec and not args.dry_run and result["promoted_count"]:
+            notifier = load_adapter(notifier_spec)
+            notifier(dict(result), notifier_context)
             result["notification"] = "sent"
         _print(result)
         return 0
-    except (ImportError, AttributeError, OSError, ValueError, sqlite3.Error) as exc:
+    except Exception as exc:
         print(f"ERROR: {safe_error_message(exc)}", file=sys.stderr)
         return 1
 
