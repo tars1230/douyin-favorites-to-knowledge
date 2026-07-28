@@ -9,7 +9,25 @@ description: 将用户已授权账号中的抖音收藏配置并同步到本地 
 
 ## 首次使用
 
-确认仓库已经安装后运行：
+先检查命令是否存在：
+
+```bash
+douyin-favorites-knowledge --help
+```
+
+如果命令不存在，优先从国内镜像安装完整程序。选择用户确认的项目目录，不要替用户猜测长期存放位置：
+
+```bash
+git clone https://gitee.com/tars123/douyin-favorites-to-knowledge.git
+cd douyin-favorites-to-knowledge
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install .
+```
+
+Gitee 不可用时再使用源码仓库 `https://github.com/tars1230/douyin-favorites-to-knowledge`。不要使用不明 GitHub 加速站。
+
+安装完成后运行：
 
 ```bash
 douyin-favorites-knowledge setup

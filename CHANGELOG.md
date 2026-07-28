@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1 - 2026-07-28
+
+- 增加 ClawHub 的 Agent 安装入口和 Gitee 国内下载入口。
+- Skill 在缺少命令时优先引导 Agent 从 Gitee 安装完整程序。
+- 增加 GitHub `main` 与正式标签到 Gitee 的自动同步。
+
 ## 1.1.0 - 2026-07-25
 
 - Adds a built-in Playwright collector for the signed-in user's Douyin favorites.

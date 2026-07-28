@@ -1,0 +1,39 @@
+name: Sync to Gitee
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Configure SSH
+        env:
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+        run: |
+          test -n "$GITEE_SSH_PRIVATE_KEY"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > "$HOME/.ssh/gitee_mirror"
+          chmod 600 "$HOME/.ssh/gitee_mirror"
+          printf '%s\n' 'gitee.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEKxHSJ7084RmkJ4YdEi5tngynE8aZe2uEoVVsB/OvYN' > "$HOME/.ssh/known_hosts"
+      - name: Sync main and release tags
+        env:
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/gitee_mirror -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+        run: |
+          git fetch --force origin refs/heads/main:refs/remotes/origin/main --tags
+          git remote add gitee git@gitee.com:tars123/douyin-favorites-to-knowledge.git
+          git push gitee refs/remotes/origin/main:refs/heads/main
+          git push gitee --tags

@@ -10,10 +10,26 @@
 
 ## 最短使用路径
 
-安装：
+### 交给 Agent
+
+支持 ClawHub 的 Agent 可以直接安装 Skill：
 
 ```bash
-git clone https://github.com/tars1230/douyin-favorites-to-knowledge.git
+clawhub install douyin-favorites-to-knowledge
+```
+
+然后告诉 Agent：
+
+```text
+把我的抖音收藏同步到本地 Markdown 知识库。先使用默认轻量配置，不要让我复制 Cookie。
+```
+
+Agent 会在缺少程序时从国内镜像完成安装，并运行 `setup`。你只需要确认知识库目录，再在抖音官方页面正常登录。
+
+### 手动安装
+
+```bash
+git clone https://gitee.com/tars123/douyin-favorites-to-knowledge.git
 cd douyin-favorites-to-knowledge
 python3 -m venv .venv
 . .venv/bin/activate
@@ -36,16 +52,7 @@ douyin-favorites-knowledge sync
 
 命令会列出本次新增收藏。输入 `y` 后才会写入知识库；输入其他内容会取消，不改任何文件。
 
-## 让 AI 帮你安装
-
-把下面这句话发给 Codex、Claude Code 或其他能够操作本机项目的编程 Agent：
-
-```text
-请安装并配置这个项目：https://github.com/tars1230/douyin-favorites-to-knowledge
-把我的抖音收藏同步到本地 Markdown 知识库。先使用默认轻量配置，不要让我复制 Cookie。
-```
-
-Agent 应当完成安装并运行 `setup`。你只需要确认知识库目录，并在抖音官方页面登录。
+[GitHub](https://github.com/tars1230/douyin-favorites-to-knowledge) 保存源码、版本和问题反馈；[Gitee](https://gitee.com/tars123/douyin-favorites-to-knowledge) 提供国内下载，并自动同步 `main` 与正式标签。
 
 ## 安装说明
 
@@ -69,7 +76,7 @@ py -3 -m venv .venv
 python -m pip install .
 ```
 
-没有 Git 时，可以在 GitHub 页面点击 **Code -> Download ZIP**，解压后进入项目目录。
+没有 Git 时，可以在 Gitee 页面选择 **克隆/下载 -> 下载 ZIP**，解压后进入项目目录。
 
 系统会优先使用 Chrome 或 Edge。两者都没有时运行：
 

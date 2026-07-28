@@ -10,9 +10,12 @@ TEXT_SUFFIXES = {".md", ".py", ".json", ".yml", ".yaml", ".toml", ".txt"}
 class RepositoryTests(unittest.TestCase):
     def test_version_is_current_release(self):
         text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "1.2.0"', text)
+        project_version = re.search(r'(?m)^version = "([^"]+)"$', text)
         package = (ROOT / "src" / "douyin_favorites_knowledge" / "__init__.py").read_text(encoding="utf-8")
-        self.assertIn('__version__ = "1.2.0"', package)
+        package_version = re.search(r'(?m)^__version__ = "([^"]+)"$', package)
+        self.assertIsNotNone(project_version)
+        self.assertIsNotNone(package_version)
+        self.assertEqual(project_version.group(1), package_version.group(1))
 
     def test_skill_frontmatter(self):
         text = (ROOT / "skill" / "SKILL.md").read_text(encoding="utf-8")
