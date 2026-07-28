@@ -12,13 +12,19 @@
 
 ### 交给 Agent
 
-把下面这句话发给 Codex、Claude Code、OpenClaw 等 Agent：
+支持 ClawHub 的 Agent 先运行：
 
-```text
-请从 https://gitee.com/tars123/douyin-favorites-to-knowledge 安装“抖音收藏转本地知识库”，引导我完成首次设置，并把新增收藏同步到我的 Markdown 或 Obsidian 知识库。先使用默认轻量配置，不要让我复制 Cookie。
+```bash
+clawhub install douyin-favorites-to-knowledge
 ```
 
-你只需要确认知识库目录，再在抖音官方页面正常登录。ClawHub 一键安装正在等待平台发布审核；审核通过前请使用上面的 Gitee 地址。
+然后告诉 Agent：
+
+```text
+把我的抖音收藏同步到本地 Markdown 或 Obsidian 知识库。先使用默认轻量配置，不要让我复制 Cookie。
+```
+
+Agent 会在缺少程序时优先从 Gitee 安装完整程序。你只需要确认知识库目录，再在抖音官方页面正常登录。
 
 ### 手动安装
 
