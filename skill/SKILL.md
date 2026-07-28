@@ -1,10 +1,10 @@
 ---
 name: douyin-favorites-to-knowledge
 version: 1.2.1
-description: 将用户已授权账号中的抖音收藏配置并同步到本地 Markdown 或 Obsidian 知识库；提供首次 setup、增量 sync、登录恢复、JSON 导入、局部审核，以及按需接入本地转录、MiniMax 或其他分析模型和飞书通知。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
+description: 将用户已授权账号中的抖音视频收藏配置并同步到本地 Markdown 或 Obsidian 知识库；提供首次 setup、增量 sync、登录恢复、JSON 导入、局部审核，以及按需接入本地转录、MiniMax 或其他分析模型和飞书通知。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
 ---
 
-# 抖音收藏转本地知识库
+# 抖音视频收藏转本地知识库
 
 优先使用单入口流程。不要先向用户解释 schema、模式、provider 或 adapter。
 
