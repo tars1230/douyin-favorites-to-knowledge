@@ -11,6 +11,9 @@ from typing import Any
 
 COLLECTION_PAGE_URL = "https://www.douyin.com/user/self?showTab=favorite_collection"
 COLLECTION_API_URL = "https://www.douyin.com/aweme/v1/web/aweme/listcollection/"
+LIKES_PAGE_URL = "https://www.douyin.com/user/self?showTab=like"
+LIKES_API_URL = "https://www.douyin.com/aweme/v1/web/aweme/favorite/"
+SOURCES = frozenset({"collection", "like"})
 SESSION_COOKIE_NAMES = frozenset({"sessionid", "sessionid_ss", "sid_guard"})
 AWEME_ID = re.compile(r"^[0-9]{6,30}$")
 
@@ -29,7 +32,7 @@ def default_profile_dir() -> Path:
     return root / "douyin-favorites-to-knowledge" / "browser-profile"
 
 
-def _source_item(raw: dict[str, Any], observed_at: str) -> dict[str, Any] | None:
+def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collection") -> dict[str, Any] | None:
     aweme_id = str(raw.get("aweme_id") or "").strip()
     if not AWEME_ID.fullmatch(aweme_id):
         return None
@@ -43,15 +46,22 @@ def _source_item(raw: dict[str, Any], observed_at: str) -> dict[str, Any] | None
         "author": str(raw.get("author") or "").strip(),
         "description": description,
         "transcript": "",
+        "transcript_source": "none",
+        "transcript_status": "not_requested",
         "tags": [],
         "observed_at": observed_at,
+        "source": source,
+        "play_url": str(raw.get("play_url") or "").strip(),
     }
 
 
 class BrowserCollector:
-    def __init__(self, profile_dir: Path | None = None, channel: str | None = None):
+    def __init__(self, profile_dir: Path | None = None, channel: str | None = None, source: str = "collection"):
+        if source not in SOURCES:
+            raise ValueError("source must be collection or like")
         self.profile_dir = (profile_dir or default_profile_dir()).expanduser().resolve()
         self.channel = channel
+        self.source = source
         self._playwright = None
         self._context = None
         self._page = None
@@ -101,7 +111,8 @@ class BrowserCollector:
     async def navigate(self) -> None:
         if self._page is None:
             raise ValueError("browser is not open")
-        await self._page.goto(COLLECTION_PAGE_URL, wait_until="domcontentloaded", timeout=45_000)
+        target = COLLECTION_PAGE_URL if self.source == "collection" else LIKES_PAGE_URL
+        await self._page.goto(target, wait_until="domcontentloaded", timeout=45_000)
 
     async def authenticated(self) -> bool:
         if self._context is None:
@@ -123,7 +134,7 @@ class BrowserCollector:
         if self._page is None:
             raise ValueError("browser is not open")
         result = await self._page.evaluate(
-            """async ({apiUrl, cursor, count}) => {
+            """async ({apiUrl, cursor, count, source}) => {
                 const params = new URLSearchParams({
                     device_platform: 'webapp',
                     aid: '6383',
@@ -133,13 +144,22 @@ class BrowserCollector:
                     browser_platform: navigator.platform || '',
                     browser_name: 'Chrome',
                 });
-                const body = new URLSearchParams({count: String(count), cursor: String(cursor)});
-                const response = await fetch(apiUrl + '?' + params.toString(), {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: body.toString(),
-                });
+                let response;
+                if (source === 'collection') {
+                    const body = new URLSearchParams({count: String(count), cursor: String(cursor)});
+                    response = await fetch(apiUrl + '?' + params.toString(), {
+                        method: 'POST', credentials: 'include',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString(),
+                    });
+                } else {
+                    const scripts = [...document.scripts].map(node => node.textContent || '').join('\n');
+                    const match = scripts.match(/"sec_user_id"\\s*:\\s*"([^"\\]+)"/) || scripts.match(/sec_user_id=([^&"\\s]+)/);
+                    if (!match) return {ok: false, error: 'sec_user_id_missing'};
+                    params.set('sec_user_id', match[1]);
+                    params.set('max_cursor', String(cursor));
+                    params.set('count', String(count));
+                    response = await fetch(apiUrl + '?' + params.toString(), {credentials: 'include'});
+                }
                 if (!response.ok) {
                     return {ok: false, http_status: response.status};
                 }
@@ -147,24 +167,25 @@ class BrowserCollector:
                 return {
                     ok: data.status_code === 0,
                     status_code: data.status_code,
-                    cursor: Number(data.cursor || 0),
+                    cursor: Number(source === 'collection' ? data.cursor || 0 : data.max_cursor || 0),
                     has_more: Boolean(data.has_more),
                     items: (data.aweme_list || []).map(item => ({
                         aweme_id: String(item.aweme_id || ''),
                         description: item.desc || '',
                         author: item.author ? item.author.nickname || '' : '',
+                        play_url: item.video && item.video.play_addr && item.video.play_addr.url_list ? item.video.play_addr.url_list[0] || '' : '',
                     })),
                 };
             }""",
-            {"apiUrl": COLLECTION_API_URL, "cursor": cursor, "count": count},
+            {"apiUrl": self.source == "collection" and COLLECTION_API_URL or LIKES_API_URL, "cursor": cursor, "count": count, "source": self.source},
         )
         if not isinstance(result, dict):
             raise ValueError("Douyin returned an invalid collection response")
         return result
 
 
-async def _login(*, timeout_seconds: int, channel: str | None) -> dict[str, Any]:
-    collector = BrowserCollector(channel=channel)
+async def _login(*, timeout_seconds: int, channel: str | None, source: str = "collection") -> dict[str, Any]:
+    collector = BrowserCollector(channel=channel, source=source)
     await collector.open(headless=False)
     try:
         await collector.navigate()
@@ -180,11 +201,11 @@ async def _login(*, timeout_seconds: int, channel: str | None) -> dict[str, Any]
         await collector.close()
 
 
-def login_browser(*, timeout_seconds: int = 300, channel: str | None = None) -> dict[str, Any]:
+def login_browser(*, timeout_seconds: int = 300, channel: str | None = None, source: str = "collection") -> dict[str, Any]:
     if timeout_seconds < 10:
         raise ValueError("login timeout must be at least 10 seconds")
     try:
-        return asyncio.run(_login(timeout_seconds=timeout_seconds, channel=channel))
+        return asyncio.run(_login(timeout_seconds=timeout_seconds, channel=channel, source=source))
     except ValueError:
         raise
     except Exception as exc:
@@ -238,8 +259,9 @@ async def _collect(
     interactive_login: bool,
     headed: bool,
     channel: str | None,
+    source: str = "collection",
 ) -> list[dict[str, Any]]:
-    collector = BrowserCollector(channel=channel)
+    collector = BrowserCollector(channel=channel, source=source)
     await collector.open(headless=not headed)
     try:
         await collector.navigate()
@@ -247,7 +269,8 @@ async def _collect(
             await collector.close()
             if not interactive_login:
                 raise ValueError("Douyin login is required; run the login command first")
-            await _login(timeout_seconds=300, channel=channel)
+            await _login(timeout_seconds=300, channel=channel, source=source)
+            collector = BrowserCollector(channel=channel, source=source)
             await collector.open(headless=not headed)
             await collector.navigate()
 
@@ -266,7 +289,7 @@ async def _collect(
             for raw in items:
                 if not isinstance(raw, dict):
                     continue
-                item = _source_item(raw, observed_at)
+                item = _source_item(raw, observed_at, source)
                 if item is not None:
                     collected[item["aweme_id"]] = item
                     if len(collected) >= max_items:
@@ -290,9 +313,12 @@ def collect_browser_favorites(
     interactive_login: bool = True,
     headed: bool = False,
     channel: str | None = None,
+    source: str = "collection",
 ) -> list[dict[str, Any]]:
     if max_items < 1 or max_items > 10_000:
         raise ValueError("max_items must be between 1 and 10000")
+    if source not in SOURCES:
+        raise ValueError("source must be collection or like")
     try:
         return asyncio.run(
             _collect(
@@ -300,6 +326,7 @@ def collect_browser_favorites(
                 interactive_login=interactive_login,
                 headed=headed,
                 channel=channel,
+                source=source,
             )
         )
     except ValueError:

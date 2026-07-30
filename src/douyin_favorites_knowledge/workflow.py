@@ -17,6 +17,7 @@ from .security import assert_safe_value
 
 SCHEMA_VERSION = 1
 AWEME_ID = re.compile(r"^[0-9]{6,30}$")
+SOURCES = frozenset({"collection", "like", "import"})
 
 
 def utc_now() -> str:
@@ -72,15 +73,22 @@ def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
     tags = raw.get("tags") or []
     if not isinstance(tags, list) or not all(isinstance(tag, str) and tag.strip() for tag in tags):
         raise ValueError(f"item {aweme_id} tags must be non-empty strings")
+    transcript = _text(raw, "transcript")
+    source = _text(raw, "source") or "import"
+    if source not in SOURCES:
+        raise ValueError(f"unsupported item source: {source!r}")
     item = {
         "aweme_id": aweme_id,
         "title": title,
         "author": _text(raw, "author"),
         "description": _text(raw, "description"),
-        "transcript": _text(raw, "transcript"),
+        "transcript": transcript,
+        "transcript_source": _text(raw, "transcript_source") or ("provided" if transcript else "none"),
+        "transcript_status": _text(raw, "transcript_status") or ("success" if transcript else "not_requested"),
         "tags": sorted(set(tag.strip() for tag in tags)),
         "observed_at": _text(raw, "observed_at"),
         "source_url": f"https://www.douyin.com/video/{aweme_id}",
+        "source": source,
     }
     item["content_sha256"] = sha256_bytes(canonical_json(item))
     item["note"] = render_note(item)
@@ -97,6 +105,9 @@ def render_note(item: dict[str, Any]) -> str:
         f"source_url: {quote(item['source_url'])}",
         f"observed_at: {quote(item['observed_at'])}",
         f"tags: {json.dumps(item['tags'], ensure_ascii=False)}",
+        f"source: {quote(item['source'])}",
+        f"transcript_source: {quote(item['transcript_source'])}",
+        f"transcript_status: {quote(item['transcript_status'])}",
         "---",
         "",
         f"# {item['title']}",
@@ -106,6 +117,8 @@ def render_note(item: dict[str, Any]) -> str:
         lines.extend(["## Description", "", item["description"], ""])
     if item["transcript"]:
         lines.extend(["## Transcript", "", item["transcript"], ""])
+    elif item["transcript_status"] != "not_requested":
+        lines.extend(["## Transcript", "", "未获得语音转录；上方 Description 仅是原始描述，不是逐字稿。", ""])
     lines.extend(["## Source", "", item["source_url"], ""])
     note = "\n".join(lines)
     assert_safe_value(note, f"note:{item['aweme_id']}")
@@ -135,6 +148,16 @@ def load_ledger(config: Config) -> dict[str, str]:
         return dict(connection.execute("select aweme_id, content_sha256 from promotions"))
 
 
+def _known_hash(known: dict[str, str], item: dict[str, Any]) -> str | None:
+    """v1 collection entries used a bare aweme_id before source separation."""
+    keyed = known.get(f"{item['source']}:{item['aweme_id']}")
+    if keyed:
+        return keyed
+    if item["source"] == "collection" and item["aweme_id"] in known:
+        return "legacy"
+    return None
+
+
 def build_review(
     config: Config,
     raw_items: Iterable[dict[str, Any]],
@@ -153,8 +176,11 @@ def build_review(
             if previous["content_sha256"] != item["content_sha256"]:
                 raise ValueError(f"conflicting duplicate aweme_id: {item['aweme_id']}")
             continue
-        known_hash = known.get(item["aweme_id"])
+        known_hash = _known_hash(known, item)
         if known_hash:
+            if known_hash == "legacy":
+                already_promoted += 1
+                continue
             if known_hash != item["content_sha256"]:
                 raise ValueError(
                     f"promoted item changed: {item['aweme_id']}; manual migration required"
@@ -193,9 +219,12 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
             "author",
             "description",
             "transcript",
+            "transcript_source",
+            "transcript_status",
             "tags",
             "observed_at",
             "source_url",
+            "source",
             "content_sha256",
             "note",
         }
@@ -267,13 +296,16 @@ def _promotion_plan(
     skipped = 0
     for item in selected:
         aweme_id = item["aweme_id"]
-        known_hash = known.get(aweme_id)
+        known_hash = _known_hash(known, item)
         if known_hash:
+            if known_hash == "legacy":
+                skipped += 1
+                continue
             if known_hash != item["content_sha256"]:
                 raise ValueError(f"ledger content conflict for {aweme_id}")
             skipped += 1
             continue
-        final_path = config.knowledge_dir / f"{aweme_id}.md"
+        final_path = config.knowledge_dir / f"{item['source']}-{aweme_id}.md"
         if final_path.exists() and final_path.read_text(encoding="utf-8") != item["note"]:
             raise ValueError(f"untracked note conflict for {aweme_id}")
         pending.append(item)
@@ -333,14 +365,14 @@ def promote(
         staging = Path(tempfile.mkdtemp(prefix=".promote-", dir=config.knowledge_dir))
         try:
             for item in pending:
-                staged = staging / f"{item['aweme_id']}.md"
+                staged = staging / f"{item['source']}-{item['aweme_id']}.md"
                 staged.write_text(item["note"], encoding="utf-8")
                 with staged.open("rb") as handle:
                     os.fsync(handle.fileno())
             for item in pending:
                 os.replace(
-                    staging / f"{item['aweme_id']}.md",
-                    config.knowledge_dir / f"{item['aweme_id']}.md",
+                    staging / f"{item['source']}-{item['aweme_id']}.md",
+                    config.knowledge_dir / f"{item['source']}-{item['aweme_id']}.md",
                 )
 
             now = utc_now()
@@ -349,9 +381,9 @@ def promote(
                 "insert into promotions values (?, ?, ?, ?, ?)",
                 [
                     (
-                        item["aweme_id"],
+                        f"{item['source']}:{item['aweme_id']}",
                         item["content_sha256"],
-                        f"{item['aweme_id']}.md",
+                        f"{item['source']}-{item['aweme_id']}.md",
                         review_hash,
                         now,
                     )

@@ -4,13 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "douyin-favorites-to-knowledge"
-version = "1.2.1"
+version = "1.5.0"
 description = "Authorized Douyin favorites collection with optional transcription and analysis adapters"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Cheng Chen"}]
 dependencies = ["playwright>=1.50,<2"]
+
+[project.optional-dependencies]
+bailian-asr = ["dashscope>=1.26,<2"]
+local-asr = ["faster-whisper>=1.1,<2"]
 
 [project.scripts]
 douyin-favorites-knowledge = "douyin_favorites_knowledge.cli:main"
