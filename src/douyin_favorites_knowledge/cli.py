@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -24,6 +26,9 @@ from .workflow import (
     read_input,
     read_review,
 )
+
+DEFAULT_MAX_DAILY_AUDIO_SECONDS = 3600
+DEFAULT_MAX_DAILY_ITEMS = 100
 
 
 def parser() -> argparse.ArgumentParser:
@@ -165,7 +170,16 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
         "knowledge_dir": str(knowledge_dir.expanduser().resolve()),
         "ledger_path": str((config_path.parent / "state" / "ledger.sqlite3").resolve()),
         "transcription": (
-            {"enabled": True, "provider": provider, "model": model}
+            {
+                "enabled": True,
+                "provider": provider,
+                "model": model,
+                "options": (
+                    {"max_daily_audio_seconds": DEFAULT_MAX_DAILY_AUDIO_SECONDS, "max_daily_items": DEFAULT_MAX_DAILY_ITEMS}
+                    if provider == "bailian"
+                    else {"max_media_bytes": 512 * 1024 * 1024}
+                ),
+            }
             if transcription != "none"
             else {"enabled": False, "provider": "none"}
         ),
@@ -255,13 +269,81 @@ def _apply_enricher(raw_items: list[dict], spec: str, context: dict, built_in=No
     return enriched
 
 
+def _reserve_bailian_budget(config: Config, item: dict, duration: float) -> int | None:
+    """Atomically reserve today's configured ASR allowance before an API call."""
+    options = config.transcription.options
+    max_seconds = options.get("max_daily_audio_seconds", DEFAULT_MAX_DAILY_AUDIO_SECONDS)
+    max_items = options.get("max_daily_items", DEFAULT_MAX_DAILY_ITEMS)
+    config.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    today = date.today().isoformat()
+    with sqlite3.connect(config.ledger_path, timeout=30) as connection:
+        connection.execute("pragma busy_timeout=30000")
+        connection.execute(
+            "create table if not exists transcription_usage (id integer primary key, usage_date text not null, duration_seconds real not null, status text not null, reserved_at integer not null)"
+        )
+        connection.execute("begin immediate")
+        connection.execute(
+            "delete from transcription_usage where status = 'reserved' and reserved_at < ?",
+            (int(time.time()) - 15 * 60,),
+        )
+        used_seconds, used_items = connection.execute(
+            "select coalesce(sum(duration_seconds), 0), count(*) from transcription_usage where usage_date = ? and status in ('reserved', 'success')",
+            (today,),
+        ).fetchone()
+        if (max_seconds is not None and used_seconds + duration > float(max_seconds)) or (
+            max_items is not None and used_items >= int(max_items)
+        ):
+            connection.commit()
+            return None
+        cursor = connection.execute(
+            "insert into transcription_usage (usage_date, duration_seconds, status, reserved_at) values (?, ?, 'reserved', ?)",
+            (today, duration, int(time.time())),
+        )
+        connection.commit()
+        return int(cursor.lastrowid)
+
+
+def _finish_bailian_budget(config: Config, reservation_id: int, success: bool) -> None:
+    if not reservation_id:
+        return
+    with sqlite3.connect(config.ledger_path, timeout=30) as connection:
+        if success:
+            connection.execute("update transcription_usage set status = 'success' where id = ?", (reservation_id,))
+        else:
+            connection.execute("delete from transcription_usage where id = ?", (reservation_id,))
+        connection.commit()
+
+
 def _apply_configured_stages(raw_items: list[dict], config: Config) -> list[dict]:
     for stage in config.enrichment_stages():
         if stage.name == "transcription" and stage.provider == "bailian":
             readiness = check_bailian_environment()
             if not readiness["ready"]:
                 raise ValueError(f"Bailian transcription is not ready: {', '.join(readiness['missing'])}")
-            raw_items = _apply_enricher(raw_items, "", stage.context(config.mode), transcribe_with_bailian)
+            enriched = []
+            for raw in raw_items:
+                duration = raw.get("duration_seconds", 0)
+                try:
+                    duration = max(0.0, float(duration or 0))
+                except (TypeError, ValueError):
+                    duration = 0.0
+                reservation_id = _reserve_bailian_budget(config, raw, duration)
+                if reservation_id is None:
+                    enriched.append({
+                        **raw,
+                        "transcript": "",
+                        "transcript_source": "bailian_qwen3_asr_flash",
+                        "transcript_status": "budget_exceeded",
+                    })
+                    continue
+                try:
+                    item = _apply_enricher([raw], "", stage.context(config.mode), transcribe_with_bailian)[0]
+                except Exception:
+                    _finish_bailian_budget(config, reservation_id, False)
+                    raise
+                enriched.append(item)
+                _finish_bailian_budget(config, reservation_id, item.get("transcript_status") == "success")
+            raw_items = enriched
         elif stage.name == "transcription" and stage.provider == "local_whisper":
             readiness = check_local_whisper_environment()
             if not readiness["ready"]:
@@ -327,10 +409,14 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
     if mismatched:
         raise ValueError(f"collector returned items outside requested source: {args.source}")
     raw_items = _apply_configured_stages(list(raw_items), config)
+    retryable_statuses = {"failed", "unavailable", "too_large", "budget_exceeded"}
+    retryable_count = sum(item.get("transcript_status") in retryable_statuses for item in raw_items)
+    if config.transcription.enabled:
+        raw_items = [item for item in raw_items if item.get("transcript_status") not in retryable_statuses]
     manifest = build_review(config, raw_items, f"authorized_browser:{args.source}")
     candidates = manifest["items"]
     if not candidates:
-        summary = {"status": "no_changes"}
+        summary = {"status": "no_changes", **({"retryable_count": retryable_count} if retryable_count else {})}
         if report_date:
             _write_daily_report(config, args.source, report_date, [])
             summary["daily_report"] = "written"
@@ -359,6 +445,8 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
         "promoted_count": result["promoted_count"],
         "skipped_count": result["skipped_count"],
     }
+    if retryable_count:
+        summary["retryable_count"] = retryable_count
     if "notification" in result:
         summary["notification"] = result["notification"]
     if report_date:

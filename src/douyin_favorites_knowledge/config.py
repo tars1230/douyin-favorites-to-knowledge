@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 from dataclasses import dataclass
@@ -92,6 +93,9 @@ def _stage_config(raw: dict[str, Any], name: str) -> StageConfig:
         raise ValueError(f"config {name}.model must be a string")
     if not isinstance(options, dict):
         raise ValueError(f"config {name}.options must be an object")
+    for option_name in ("max_daily_audio_seconds", "max_daily_items", "max_media_bytes"):
+        if option_name in options and (isinstance(options[option_name], bool) or not isinstance(options[option_name], (int, float)) or not math.isfinite(options[option_name]) or options[option_name] <= 0):
+            raise ValueError(f"config {name}.options.{option_name} must be a positive number")
     if enabled and provider == "none":
         raise ValueError(f"config {name}.provider cannot be none when enabled")
     if enabled and provider not in {"bailian", "local_whisper"} and not adapter:
