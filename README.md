@@ -1,12 +1,12 @@
 # 抖音收藏转本地知识库
 
-刷到有用的视频就收藏。需要整理时运行一次同步，新收藏会变成可搜索的本地 Markdown 笔记。
+刷到有用的视频就收藏。需要整理时运行一次同步，新收藏会变成可搜索的本地 Markdown 笔记。默认采集**收藏**；用户明确说“喜欢/点赞”时才采集喜欢列表，二者绝不混用。
 
 [![CI](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml/badge.svg)](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-不用复制 Cookie，不用先选模型，也不用理解内部处理步骤。
+不用复制 Cookie，也不用理解内部处理步骤。首次 `setup` 会明确让你选择：推荐的百炼云端转录、本地 Whisper，或暂不转录。
 
 ## 最短使用路径
 
@@ -21,7 +21,7 @@ clawhub install douyin-favorites-to-knowledge
 然后告诉 Agent：
 
 ```text
-把我的抖音收藏同步到本地 Markdown 或 Obsidian 知识库。先使用默认轻量配置，不要让我复制 Cookie。
+把我的抖音收藏同步到本地 Markdown 或 Obsidian 知识库。使用推荐的百炼云端转录，不要让我复制 Cookie。
 ```
 
 Agent 会在缺少程序时优先从 Gitee 安装完整程序。你只需要确认知识库目录，再在抖音官方页面正常登录。
@@ -42,7 +42,7 @@ python -m pip install .
 douyin-favorites-knowledge setup
 ```
 
-按照提示选择知识库目录，随后在打开的抖音官方页面正常登录。
+按照提示选择知识库目录和转录方案，随后在打开的抖音官方页面正常登录。
 
 以后同步只需要：
 
@@ -88,11 +88,12 @@ python -m playwright install chromium
 
 ### `setup` 做了什么
 
-`setup` 只做三件事：
+`setup` 做四件事：
 
 1. 询问 Markdown 或 Obsidian 知识库目录；
-2. 在系统应用配置目录生成安全的默认配置；
-3. 打开抖音官方页面完成登录。
+2. 让你明确选择百炼云端、本地 Whisper 或暂不转录；
+3. 在系统应用配置目录生成安全的配置；
+4. 打开抖音官方页面完成登录。
 
 配置文件不保存 Cookie、API key、密码或 token。Cookie 只留在独立的本地浏览器 profile 中。
 
@@ -101,6 +102,9 @@ python -m playwright install chromium
 ```bash
 # 直接指定知识库目录
 douyin-favorites-knowledge setup --knowledge-dir "我的知识库目录"
+
+# 非交互安装必须明确选择转录方案
+douyin-favorites-knowledge setup --knowledge-dir "我的知识库目录" --transcription bailian
 
 # 只创建配置，稍后再登录
 douyin-favorites-knowledge setup --knowledge-dir "我的知识库目录" --skip-login
@@ -134,6 +138,59 @@ douyin-favorites-knowledge sync --yes --no-login-prompt
 ```
 
 `--yes` 表示批准本次全部新增；`--no-login-prompt` 表示登录过期时直接失败。项目提供同步命令，但不会擅自创建系统定时任务。
+
+### 收藏与喜欢
+
+- **收藏（默认）**：`showTab=favorite_collection` / `listcollection`，是用户主动筛选的知识候选集。
+- **喜欢（可选）**：`showTab=like` / `favorite`，是另一套独立列表，通常量更大、噪声更多。
+
+对 Agent 说“同步我的抖音收藏”或不指定来源时，一律运行收藏；只有用户明确说“喜欢”“点赞”才运行：
+
+```bash
+douyin-favorites-knowledge sync --source like
+```
+
+两类来源有独立的防重键和 Markdown 文件名，防止历史上“收藏与喜欢混成同一增量状态”的漏采事故。
+
+## 视频转录与费用
+
+首次 `setup` 必须明确选择一种方案。它会先进行不读取密钥、不下载模型、不产生费用的本机能力检测，再展示建议；非交互环境使用 `--transcription bailian|local|none`。检测到百炼 Key 也不会自动开启付费转录。
+
+| 方案 | 适合谁 | 首次要求 | 费用 |
+|---|---|---|---|
+| `bailian`（推荐，`cloud` 为兼容别名） | 想少折腾、稳定获得全文 | 百炼 Key 和 `.[bailian-asr]` | 按音频秒数计费 |
+| `local` | 不希望使用云端 API、能接受本机等待 | `ffmpeg`、`faster-whisper`、约 500 MB 首次模型下载和至少 1.5 GB 临时空间 | 无 API 费用，消耗本机计算和电力 |
+| `none` | 只需要收藏描述与链接 | 无 | 无 |
+
+### 百炼云端（推荐）
+
+默认方案直连阿里云百炼的 `qwen3-asr-flash`，只读取环境变量 `DASHSCOPE_API_KEY`。Key 不写入配置、笔记或日志；`check-config` 只检查 Key 是否存在和 `dashscope` 是否已安装，缺任一项都不会开始同步。云端转录把已授权采集到的临时播放地址交给百炼，项目本身不下载视频到本地。
+
+```bash
+export DASHSCOPE_API_KEY="你的百炼 Key"
+python -m pip install '.[bailian-asr]'
+douyin-favorites-knowledge setup --transcription bailian
+douyin-favorites-knowledge check-config
+```
+
+`douyin-mcp-server` 是开源第三方项目（不是抖音或阿里云官方），仅保留给已有配置的兼容使用；新用户不需要安装它。其历史版本使用过不同转录服务，因此不要把任意本机 `douyin-mcp` 配置当成百炼可用的证明。
+
+截至 **2026-07-30**，阿里云百炼[官方价格页](https://help.aliyun.com/zh/model-studio/model-pricing)列出的华北 2（北京）`qwen3-asr-flash` 为 **0.00022 元/秒**，输出不计费：约 **0.0132 元/分钟**、**0.132 元/10 分钟**、**0.792 元/小时**。该地域页面同时列出 **36,000 秒（10 小时）**免费额度，说明有效期为自开通百炼、模型发布或申请通过之日起（取较晚者）90 天；其他地域的额度规则不同。
+
+价格、地域、免费额度和活动会变动，`check-config` 只提供上述估算。**实际扣费以百炼控制台账单为准**。本机没有可公开的百炼账单导出，因此项目不宣称“每条视频实际花了多少钱”。
+
+### 本地 Whisper
+
+选 `local` 后，程序才会在第一次同步时允许下载 `small` 模型（约 500 MB，实际大小随上游版本变化）。先安装运行时：
+
+```bash
+python -m pip install '.[local-asr]'
+# 另行安装 ffmpeg，例如 macOS: brew install ffmpeg
+douyin-favorites-knowledge setup --transcription local
+douyin-favorites-knowledge check-config
+```
+
+程序只用已授权采集到的临时播放地址下载媒体，提取音频并在临时目录转录，结束后删除临时媒体和音频。转录失败时保留 Description，并明确标记“未获得语音转录”，不会把描述冒充逐字稿。
 
 ## 输出结果
 
@@ -173,6 +230,8 @@ douyin-favorites-knowledge logout
 | `secret-like key blocked` | 从配置删除密钥、Cookie 或 token，改用环境变量或密钥管理器 |
 | 想更换知识库目录 | 运行 `douyin-favorites-knowledge setup --force` |
 | 自动任务等待确认 | 使用显式参数 `sync --yes --no-login-prompt` |
+| 百炼未就绪 | 设置 `DASHSCOPE_API_KEY`，安装 `python -m pip install '.[bailian-asr]'`，再运行 `check-config` |
+| 本地转录未就绪 | 安装 `.[local-asr]`、`ffmpeg`，并留出至少 1.5 GB 临时空间 |
 
 仍无法判断时，保留执行命令、`check-config` 输出和脱敏后的 `ERROR:` 文本。不要提交浏览器 profile、Cookie 或密钥文件。
 
@@ -194,13 +253,17 @@ douyin-favorites-knowledge logout
 
 | 阶段 | 可选来源 |
 |---|---|
-| 转录 | 本地语音模型或自定义 adapter |
+| 转录 | 内置百炼、内置本地 Whisper 或自定义 adapter |
 | 分析 | 本地模型、MiniMax 或其他 adapter |
 | 通知 | 飞书或其他 adapter |
 
-MiniMax 不是必需项，本地模型也不写死。不同电脑可以选择不同模型。具体能力通过 `module:function` adapter 接入；当前仓库没有内置视频下载器、模型自动安装器、MiniMax 客户端或飞书机器人。
+MiniMax 不是必需项，本地模型也不写死。不同电脑可以选择不同模型。具体能力通过 `module:function` adapter 接入；当前仓库不自动安装模型运行时、MiniMax 客户端或飞书机器人。
 
 完整配置结构见 [config/config.schema.json](config/config.schema.json)。修改前先完成一次默认 `setup -> sync`，并确认 adapter 能在当前虚拟环境中导入。所有凭据只能来自环境变量、系统钥匙串或 Secret Manager。
+
+### MiniMax 与本机发现
+
+`check-config` 会安全检查已知的本机命令，不扫描配置文件，也不显示凭据值。目前检测到 `mmx` 只有 `synthesize/generate/voices` 等语音生成命令时，会明确显示“不可用于转录”；仅有 `MINIMAX_API_KEY` 也不代表可用。只有将来发现公开、可验证的 ASR 命令或适配器时才会显示为候选，并且仍需用户确认后启用。
 
 Adapter 契约：
 
@@ -215,7 +278,7 @@ def notify(event: dict, context: dict) -> None:
     ...
 ```
 
-如果转录需要下载视频，adapter 必须使用已授权会话、限制临时文件范围并完成清理。核心仓库不负责下载视频。
+自定义 adapter 如需下载视频，必须使用已授权会话、限制临时文件范围并完成清理。
 
 ### 原子命令
 

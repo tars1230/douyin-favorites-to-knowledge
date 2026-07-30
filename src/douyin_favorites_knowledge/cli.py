@@ -6,8 +6,15 @@ import sys
 from pathlib import Path
 
 from .adapters import load_adapter
+from .bailian import check_environment as check_bailian_environment
+from .bailian import transcribe as transcribe_with_bailian
 from .browser_collector import browser_status, collect_browser_favorites, login_browser, logout_browser
 from .config import Config, StageConfig, default_config_path, load_config
+from .douyin_mcp import check_environment as check_douyin_mcp_environment
+from .douyin_mcp import transcribe as transcribe_with_douyin_mcp
+from .local_whisper import check_environment as check_local_whisper_environment
+from .local_whisper import transcribe as transcribe_with_local_whisper
+from .provider_discovery import discover as discover_providers
 from .security import safe_error_message
 from .workflow import (
     atomic_write_json,
@@ -30,10 +37,20 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--force", action="store_true", help="覆盖已有配置并重新选择知识库")
     setup.add_argument("--timeout", type=int, default=300, help="等待登录的秒数")
     setup.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+    transcription = setup.add_mutually_exclusive_group()
+    transcription.add_argument(
+        "--transcription", choices=("bailian", "cloud", "local", "none"),
+        help="非交互时明确选择：bailian（推荐百炼）、local（本地 Whisper）或 none；cloud 是 bailian 的兼容别名",
+    )
+    transcription.add_argument(
+        "--enable-douyin-mcp-transcription", action="store_true",
+        help="兼容旧命令，等同于 --transcription bailian",
+    )
 
     login = commands.add_parser("login", help="打开本地浏览器并保存授权登录状态")
     login.add_argument("--timeout", type=int, default=300, help="等待登录的秒数")
     login.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+    login.add_argument("--source", choices=("collection", "like"), default="collection")
 
     status = commands.add_parser("status", help="检查已保存的浏览器登录状态，不输出会话内容")
     status.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
@@ -50,6 +67,7 @@ def parser() -> argparse.ArgumentParser:
     sync.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
     sync.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
     sync.add_argument("--dry-run", action="store_true", help="只显示新增候选，不写入知识库")
+    sync.add_argument("--source", choices=("collection", "like"), default="collection", help="默认收藏；喜欢需明确选择")
 
     scan = commands.add_parser("scan", help="生成待审核清单，不修改知识库")
     source = scan.add_mutually_exclusive_group()
@@ -64,6 +82,7 @@ def parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
     scan.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
     scan.add_argument("--dry-run", action="store_true", help="只校验和汇总，不写入文件")
+    scan.add_argument("--source", choices=("collection", "like"), default="collection", help="内置浏览器采集的来源")
 
     review = commands.add_parser("review", help="校验待审核清单，并按明确选择生成批准文件")
     review.add_argument("--review", type=Path, required=True)
@@ -92,24 +111,97 @@ def _config_summary(config: Config) -> dict:
         if stage.model:
             status["model"] = stage.model
         stages[stage.name] = status
+    readiness = None
+    pricing = None
+    if config.transcription.enabled and config.transcription.provider == "bailian":
+        readiness = check_bailian_environment()
+        pricing = {
+            "currency": "CNY",
+            "model": "qwen3-asr-flash",
+            "unit_rmb_per_second": 0.00022,
+            "estimated_rmb_per_minute": 0.0132,
+            "north_china_2_free_seconds": 36000,
+            "official_pricing": "https://help.aliyun.com/zh/model-studio/model-pricing",
+            "note": "官方价格页于 2026-07-30 核验；地域、额度和价格会变化，以控制台账单为准。",
+        }
+    elif config.transcription.enabled and config.transcription.provider == "douyin_mcp":
+        readiness = check_douyin_mcp_environment()
+        pricing = {
+            "currency": "CNY",
+            "model": "qwen3-asr-flash",
+            "unit_rmb_per_second": 0.00022,
+            "estimated_rmb_per_minute": 0.0132,
+            "north_china_2_free_seconds": 36000,
+            "official_pricing": "https://help.aliyun.com/zh/model-studio/model-pricing",
+            "note": "官方价格页于 2026-07-30 核验；地域、额度和价格会变化，以控制台账单为准。",
+        }
+    if config.transcription.enabled and config.transcription.provider == "local_whisper":
+        readiness = check_local_whisper_environment()
     return {
-        "status": "valid",
+        "status": "valid" if readiness is None else ("ready" if readiness["ready"] else "action_required"),
         "schema_version": config.raw["schema_version"],
         "mode": config.mode,
         "stages": stages,
+        **({"transcription_readiness": readiness} if readiness is not None else {}),
+        **({"cloud_transcription_pricing": pricing} if pricing is not None else {}),
+        "provider_discovery": discover_providers(),
     }
 
 
-def _light_config_payload(config_path: Path, knowledge_dir: Path) -> dict:
+def _transcription_next_step(transcription: str) -> str | None:
+    if transcription == "bailian":
+        readiness = check_bailian_environment()
+        if not readiness["ready"]:
+            return "百炼转录尚未就绪：设置 DASHSCOPE_API_KEY，并运行 python -m pip install '.[bailian-asr]'，然后执行 check-config。"
+    if transcription == "local":
+        readiness = check_local_whisper_environment()
+        if not readiness["ready"]:
+            return "本地转录尚未就绪：安装 ffmpeg 与 python -m pip install '.[local-asr]'；首次同步会下载模型。"
+    return None
+
+
+def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) -> dict:
+    transcription = "bailian" if transcription == "cloud" else transcription
+    provider = {"bailian": "bailian", "local": "local_whisper", "none": "none"}[transcription]
+    model = {"bailian": "qwen3-asr-flash", "local": "small", "none": ""}[transcription]
     return {
         "schema_version": 2,
-        "mode": "light",
+        "mode": "full" if transcription != "none" else "light",
         "knowledge_dir": str(knowledge_dir.expanduser().resolve()),
         "ledger_path": str((config_path.parent / "state" / "ledger.sqlite3").resolve()),
-        "transcription": {"enabled": False, "provider": "none"},
+        "transcription": (
+            {"enabled": True, "provider": provider, "model": model}
+            if transcription != "none"
+            else {"enabled": False, "provider": "none"}
+        ),
         "analysis": {"enabled": False, "provider": "none"},
         "notification": {"enabled": False, "provider": "none"},
     }
+
+
+def _choose_transcription(args: argparse.Namespace) -> str:
+    if args.enable_douyin_mcp_transcription:
+        return "bailian"
+    if args.transcription:
+        return "bailian" if args.transcription == "cloud" else args.transcription
+    discovery = discover_providers()
+    recommendation = "百炼云端" if discovery["recommended"] == "bailian" else "本地 Whisper"
+    prompt = (
+        f"本机检测（不会读取密钥、下载模型或产生费用）：推荐 {recommendation}。\n"
+        "选择转录方案：\n"
+        "  1. 百炼云端（推荐，需 DASHSCOPE_API_KEY 和 .[bailian-asr]；按音频时长计费）\n"
+        "  2. 本地 Whisper（无 API 费用；首次约下载 500 MB 模型，需要 ffmpeg、CPU 和临时磁盘）\n"
+        "  3. 暂不转录（只保存标题、描述与链接）\n"
+        "选择 [1/2/3，默认 1]: "
+    )
+    try:
+        answer = input(prompt).strip().lower()
+    except EOFError as exc:
+        raise ValueError("非交互安装请明确使用 setup --transcription bailian|local|none") from exc
+    choices = {"": "bailian", "1": "bailian", "bailian": "bailian", "cloud": "bailian", "2": "local", "local": "local", "3": "none", "none": "none"}
+    if answer not in choices:
+        raise ValueError("转录方案只能选择 1、2、3、bailian、local 或 none")
+    return choices[answer]
 
 
 def _setup(args: argparse.Namespace) -> int:
@@ -117,7 +209,7 @@ def _setup(args: argparse.Namespace) -> int:
     if config_path.exists() and not args.force:
         if args.knowledge_dir is not None:
             raise ValueError("配置已存在；更换知识库目录请使用 setup --force")
-        load_config(config_path)
+        config = load_config(config_path)
     else:
         default_knowledge = Path.home() / "Douyin Knowledge"
         knowledge_dir = args.knowledge_dir
@@ -127,8 +219,15 @@ def _setup(args: argparse.Namespace) -> int:
             except EOFError as exc:
                 raise ValueError("非交互安装请使用 setup --knowledge-dir 指定知识库目录") from exc
             knowledge_dir = Path(answer).expanduser() if answer else default_knowledge
-        atomic_write_json(config_path, _light_config_payload(config_path, knowledge_dir))
-        load_config(config_path)
+        transcription = _choose_transcription(args)
+        atomic_write_json(config_path, _config_payload(config_path, knowledge_dir, transcription))
+        config = load_config(config_path)
+
+    transcription = {
+        "bailian": "bailian",
+        "local_whisper": "local",
+        "none": "none",
+    }.get(config.transcription.provider, config.transcription.provider)
 
     login_status = "skipped"
     if not args.skip_login:
@@ -136,12 +235,19 @@ def _setup(args: argparse.Namespace) -> int:
             timeout_seconds=args.timeout,
             channel=args.browser_channel,
         )["status"]
-    _print({"status": "ready", "login": login_status})
+    next_step = _transcription_next_step(transcription)
+    _print({
+        "status": "ready",
+        "login": login_status,
+        "transcription": transcription,
+        "provider_discovery": discover_providers(),
+        **({"next_step": next_step} if next_step else {}),
+    })
     return 0
 
 
-def _apply_enricher(raw_items: list[dict], spec: str, context: dict) -> list[dict]:
-    enricher = load_adapter(spec)
+def _apply_enricher(raw_items: list[dict], spec: str, context: dict, built_in=None) -> list[dict]:
+    enricher = built_in or load_adapter(spec)
     enriched = []
     for raw in raw_items:
         if not isinstance(raw, dict):
@@ -158,7 +264,23 @@ def _apply_enricher(raw_items: list[dict], spec: str, context: dict) -> list[dic
 
 def _apply_configured_stages(raw_items: list[dict], config: Config) -> list[dict]:
     for stage in config.enrichment_stages():
-        raw_items = _apply_enricher(raw_items, stage.adapter, stage.context(config.mode))
+        if stage.name == "transcription" and stage.provider == "bailian":
+            readiness = check_bailian_environment()
+            if not readiness["ready"]:
+                raise ValueError(f"Bailian transcription is not ready: {', '.join(readiness['missing'])}")
+            raw_items = _apply_enricher(raw_items, "", stage.context(config.mode), transcribe_with_bailian)
+        elif stage.name == "transcription" and stage.provider == "douyin_mcp":
+            readiness = check_douyin_mcp_environment()
+            if not readiness["ready"]:
+                raise ValueError(f"douyin-mcp transcription is not ready: {', '.join(readiness['missing'])}")
+            raw_items = _apply_enricher(raw_items, "", stage.context(config.mode), transcribe_with_douyin_mcp)
+        elif stage.name == "transcription" and stage.provider == "local_whisper":
+            readiness = check_local_whisper_environment()
+            if not readiness["ready"]:
+                raise ValueError(f"local Whisper transcription is not ready: {', '.join(readiness['missing'])}")
+            raw_items = _apply_enricher(raw_items, "", stage.context(config.mode), transcribe_with_local_whisper)
+        else:
+            raw_items = _apply_enricher(raw_items, stage.adapter, stage.context(config.mode))
     return raw_items
 
 
@@ -184,9 +306,10 @@ def _sync(args: argparse.Namespace, config: Config) -> int:
         interactive_login=not args.no_login_prompt,
         headed=args.headed,
         channel=args.browser_channel,
+        source=args.source,
     )
     raw_items = _apply_configured_stages(list(raw_items), config)
-    manifest = build_review(config, raw_items, "authorized_browser")
+    manifest = build_review(config, raw_items, f"authorized_browser:{args.source}")
     candidates = manifest["items"]
     if not candidates:
         _print({"status": "no_changes"})
@@ -201,7 +324,7 @@ def _sync(args: argparse.Namespace, config: Config) -> int:
         return 0
 
     if not args.yes:
-        print(f"发现 {len(candidates)} 条新增收藏：")
+        print(f"发现 {len(candidates)} 条新增{'收藏' if args.source == 'collection' else '喜欢'}：")
         for item in preview:
             print(f"- {item['aweme_id']}  {item['title']}")
         if len(candidates) > len(preview):
@@ -241,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
             return _setup(args)
 
         if args.command == "login":
-            _print(login_browser(timeout_seconds=args.timeout, channel=args.browser_channel))
+            _print(login_browser(timeout_seconds=args.timeout, channel=args.browser_channel, source=args.source))
             return 0
 
         if args.command == "status":
@@ -258,8 +381,9 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("尚未完成配置，请先运行 douyin-favorites-knowledge setup")
         config = load_config(config_path)
         if args.command == "check-config":
-            _print(_config_summary(config))
-            return 0
+            summary = _config_summary(config)
+            _print(summary)
+            return 0 if summary["status"] in {"valid", "ready"} else 1
         if args.command == "sync":
             return _sync(args, config)
         if args.command == "scan":
@@ -276,8 +400,9 @@ def main(argv: list[str] | None = None) -> int:
                     interactive_login=not args.no_login_prompt,
                     headed=args.headed,
                     channel=args.browser_channel,
+                    source=args.source,
                 )
-                default_source_label = "authorized_browser"
+                default_source_label = f"authorized_browser:{args.source}"
             raw_items = _apply_configured_stages(list(raw_items), config)
             if args.enricher:
                 raw_items = _apply_enricher(raw_items, args.enricher, dict(config.raw))

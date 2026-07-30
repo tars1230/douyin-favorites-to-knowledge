@@ -17,8 +17,9 @@ PYTHONPATH = str(ROOT / "src")
 sys.path.insert(0, PYTHONPATH)
 
 from douyin_favorites_knowledge.security import safe_error_message  # noqa: E402
-from douyin_favorites_knowledge.cli import main  # noqa: E402
+from douyin_favorites_knowledge.cli import _apply_configured_stages, main  # noqa: E402
 from douyin_favorites_knowledge.config import default_config_path, load_config  # noqa: E402
+from douyin_favorites_knowledge.workflow import build_review  # noqa: E402
 
 
 def cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -229,9 +230,10 @@ class WorkflowTests(unittest.TestCase):
             interactive_login=False,
             headed=False,
             channel=None,
+            source="collection",
         )
         review = json.loads(self.review.read_text(encoding="utf-8"))
-        self.assertEqual(review["source_label"], "authorized_browser")
+        self.assertEqual(review["source_label"], "authorized_browser:collection")
 
     def test_login_does_not_require_config_or_expose_session_details(self):
         output = StringIO()
@@ -311,6 +313,8 @@ class WorkflowTests(unittest.TestCase):
                     "setup",
                     "--knowledge-dir",
                     str(self.knowledge),
+                    "--transcription",
+                    "none",
                     "--skip-login",
                 ]
             )
@@ -338,11 +342,98 @@ class WorkflowTests(unittest.TestCase):
                     "setup",
                     "--knowledge-dir",
                     str(self.knowledge),
+                    "--transcription",
+                    "none",
                 ]
             )
         self.assertEqual(returncode, 0)
         login.assert_called_once_with(timeout_seconds=300, channel=None)
         self.assertEqual(json.loads(output.getvalue())["login"], "authenticated")
+
+    def test_setup_explicitly_selects_local_whisper(self):
+        setup_config = self.root / "local-setup" / "config.json"
+        with redirect_stdout(StringIO()):
+            returncode = main(
+                [
+                    "--config", str(setup_config), "setup", "--knowledge-dir", str(self.knowledge),
+                    "--transcription", "local", "--skip-login",
+                ]
+            )
+        self.assertEqual(returncode, 0)
+        payload = json.loads(setup_config.read_text(encoding="utf-8"))
+        self.assertEqual(payload["transcription"], {
+            "enabled": True, "provider": "local_whisper", "model": "small",
+        })
+
+    def test_setup_bailian_uses_direct_provider_and_reports_actionable_next_step(self):
+        setup_config = self.root / "bailian-setup" / "config.json"
+        output = StringIO()
+        with patch("douyin_favorites_knowledge.cli.check_bailian_environment", return_value={"ready": False, "missing": ["DASHSCOPE_API_KEY"]}), patch(
+            "douyin_favorites_knowledge.cli.discover_providers", return_value={"bailian": {"state": "action_required"}, "recommended": "bailian"}
+        ), redirect_stdout(output):
+            returncode = main([
+                "--config", str(setup_config), "setup", "--knowledge-dir", str(self.knowledge),
+                "--transcription", "bailian", "--skip-login",
+            ])
+        self.assertEqual(returncode, 0)
+        payload = json.loads(setup_config.read_text(encoding="utf-8"))
+        self.assertEqual(payload["transcription"]["provider"], "bailian")
+        result = json.loads(output.getvalue())
+        self.assertIn("DASHSCOPE_API_KEY", result["next_step"])
+
+    def test_bailian_stage_does_not_call_mcp_adapter(self):
+        self.config.write_text(json.dumps({
+            "schema_version": 2, "mode": "full", "knowledge_dir": "knowledge", "ledger_path": "state/ledger.sqlite3",
+            "transcription": {"enabled": True, "provider": "bailian", "model": "qwen3-asr-flash"},
+            "analysis": {"enabled": False, "provider": "none"},
+            "notification": {"enabled": False, "provider": "none"},
+        }), encoding="utf-8")
+        item = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"][0]
+        with patch("douyin_favorites_knowledge.cli.check_bailian_environment", return_value={"ready": True}), patch(
+            "douyin_favorites_knowledge.cli.transcribe_with_bailian", return_value={"transcript": "文本", "transcript_status": "success"}
+        ) as bailian_transcribe, patch("douyin_favorites_knowledge.cli.transcribe_with_douyin_mcp") as mcp_transcribe:
+            enriched = _apply_configured_stages([item], load_config(self.config))
+        bailian_transcribe.assert_called_once()
+        mcp_transcribe.assert_not_called()
+        self.assertEqual(enriched[0]["transcript"], "文本")
+
+    def test_cloud_check_config_shows_pricing_without_credentials(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "transcription": {"enabled": True, "provider": "douyin_mcp", "model": "qwen3-asr-flash"},
+                    "analysis": {"enabled": False, "provider": "none"},
+                    "notification": {"enabled": False, "provider": "none"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = StringIO()
+        with patch("douyin_favorites_knowledge.cli.check_douyin_mcp_environment", return_value={"ready": True}), redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "check-config"])
+        self.assertEqual(returncode, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["cloud_transcription_pricing"]["unit_rmb_per_second"], 0.00022)
+        self.assertNotIn(str(self.root), output.getvalue())
+
+    def test_legacy_collection_ledger_is_not_reimported(self):
+        self.ledger.parent.mkdir(parents=True)
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "create table promotions (aweme_id text primary key, content_sha256 text, note_name text, review_sha256 text, promoted_at text)"
+            )
+            connection.execute(
+                "insert into promotions values (?, ?, ?, ?, ?)",
+                ("7000000000000000001", "old-schema-hash", "7000000000000000001.md", "old", "old"),
+            )
+        raw = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"][0]
+        review = build_review(load_config(self.config), [{**raw, "source": "collection"}], "fixture")
+        self.assertEqual(review["summary"]["candidate_count"], 0)
+        self.assertEqual(review["summary"]["already_promoted_count"], 1)
 
     def test_setup_uses_default_config_for_followup_commands(self):
         setup_config = self.root / "default" / "config.json"
@@ -354,6 +445,8 @@ class WorkflowTests(unittest.TestCase):
                         "setup",
                         "--knowledge-dir",
                         str(self.knowledge),
+                        "--transcription",
+                        "none",
                         "--skip-login",
                     ]
                 )

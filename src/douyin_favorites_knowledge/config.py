@@ -44,7 +44,7 @@ class Config:
 
 
 STAGE_PROVIDERS = {
-    "transcription": {"none", "local", "adapter"},
+    "transcription": {"none", "bailian", "douyin_mcp", "local_whisper", "local", "adapter"},
     "analysis": {"none", "local", "minimax", "adapter"},
     "notification": {"none", "feishu", "adapter"},
 }
@@ -94,11 +94,11 @@ def _stage_config(raw: dict[str, Any], name: str) -> StageConfig:
         raise ValueError(f"config {name}.options must be an object")
     if enabled and provider == "none":
         raise ValueError(f"config {name}.provider cannot be none when enabled")
-    if enabled and not adapter:
+    if enabled and provider not in {"bailian", "douyin_mcp", "local_whisper"} and not adapter:
         raise ValueError(f"config {name}.adapter is required when enabled")
     if not enabled and (provider != "none" or adapter or model or options):
         raise ValueError(f"disabled config {name} must not define provider settings")
-    if enabled and provider in {"local", "minimax"} and not model.strip():
+    if enabled and provider in {"local", "local_whisper", "minimax"} and not model.strip():
         raise ValueError(f"config {name}.model is required for provider {provider}")
     return StageConfig(
         name=name,
