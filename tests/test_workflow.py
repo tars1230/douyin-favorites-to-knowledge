@@ -363,6 +363,7 @@ class WorkflowTests(unittest.TestCase):
         payload = json.loads(setup_config.read_text(encoding="utf-8"))
         self.assertEqual(payload["transcription"], {
             "enabled": True, "provider": "local_whisper", "model": "small",
+            "options": {"max_media_bytes": 512 * 1024 * 1024},
         })
 
     def test_setup_bailian_uses_direct_provider_and_reports_actionable_next_step(self):
@@ -395,6 +396,20 @@ class WorkflowTests(unittest.TestCase):
             enriched = _apply_configured_stages([item], load_config(self.config))
         bailian_transcribe.assert_called_once()
         self.assertEqual(enriched[0]["transcript"], "文本")
+
+    def test_bailian_daily_budget_marks_excess_items_retryable(self):
+        self.config.write_text(json.dumps({
+            "schema_version": 2, "mode": "full", "knowledge_dir": "knowledge", "ledger_path": "state/ledger.sqlite3",
+            "transcription": {"enabled": True, "provider": "bailian", "model": "qwen3-asr-flash", "options": {"max_daily_audio_seconds": 30, "max_daily_items": 1}},
+            "analysis": {"enabled": False, "provider": "none"}, "notification": {"enabled": False, "provider": "none"},
+        }), encoding="utf-8")
+        items = [{"aweme_id": "7000000000000000001", "description": "a", "play_url": "u", "duration_seconds": 20}, {"aweme_id": "7000000000000000002", "description": "b", "play_url": "u", "duration_seconds": 20}]
+        with patch("douyin_favorites_knowledge.cli.check_bailian_environment", return_value={"ready": True}), patch(
+            "douyin_favorites_knowledge.cli.transcribe_with_bailian", return_value={"transcript": "text", "transcript_status": "success"}
+        ) as transcribe:
+            enriched = _apply_configured_stages(items, load_config(self.config))
+        self.assertEqual(transcribe.call_count, 1)
+        self.assertEqual(enriched[1]["transcript_status"], "budget_exceeded")
 
     def test_cloud_check_config_shows_pricing_without_credentials(self):
         self.config.write_text(

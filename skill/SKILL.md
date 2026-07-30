@@ -75,9 +75,9 @@ douyin-favorites-knowledge daily --source collection --no-login-prompt
 
 用户未指定时，建议百炼云端转录，但要先告知它会按音频时长计费，且让用户在 `setup` 中明确选择。默认直连 `qwen3-asr-flash`，只需要 `DASHSCOPE_API_KEY` 和 `python -m pip install '.[bailian-asr]'`。云端只提交已授权采集到的临时播放地址，项目不落地下载视频。密钥不能写入 config、笔记或日志。
 
-截至 2026-07-30，官方价格页的华北 2 `qwen3-asr-flash` 为 0.00022 元/秒，约 0.0132 元/分钟；10 元约转录 12.6 小时音频。若用户每月转录 10 分钟，约可使用 6 年多；每月 1 小时则约够 1 年。页面列 36,000 秒免费额度（有效期与地域以官方页为准）。价格、额度会变，实际扣费只以用户百炼控制台账单为准。笔记必须保留 `transcript_source` 与 `transcript_status`；未转录时必须说明原始 Description 不是逐字稿。
+截至 2026-07-30，官方价格页的华北 2 `qwen3-asr-flash` 为 0.00022 元/秒，约 0.0132 元/分钟；10 元约转录 12.6 小时音频。若用户每月转录 10 分钟，约可使用 6 年多；每月 1 小时则约够 1 年。页面列 36,000 秒免费额度（有效期与地域以官方页为准）。默认每日最多 100 条、3,600 秒；超限项不发给百炼、不入库，次日自动重试。价格、额度会变，实际扣费只以用户百炼控制台账单为准。笔记必须保留 `transcript_source` 与 `transcript_status`；未转录时必须说明原始 Description 不是逐字稿。
 
-用户明确要求“本地免费转写”时，使用内置 `local_whisper`：先安装 `python -m pip install '.[local-asr]'` 与 `ffmpeg`，再 `setup --transcription local`。首次同步才下载 `small` 模型（约 500 MB），并要求至少 1.5 GB 临时空间。它没有 API 费用，但会使用本机 CPU、磁盘和电力；未满足前置条件时，`check-config` 必须报缺项，不能静默降级或下载。
+用户明确要求“本地免费转写”时，使用内置 `local_whisper`：先安装 `python -m pip install '.[local-asr]'` 与 `ffmpeg`，再 `setup --transcription local`。首次同步才下载 `small` 模型（约 500 MB），并要求至少 1.5 GB 临时空间。视频和音频只在系统临时目录存在，完成后删除；下次运行会回收超过 24 小时的异常残留。默认单视频下载上限 512 MB，模型缓存保留供复用。失败、过大或预算超限的条目不入库且下次自动重试。它没有 API 费用，但会使用本机 CPU、磁盘和电力；未满足前置条件时，`check-config` 必须报缺项，不能静默降级或下载。
 
 ## 故障处理
 

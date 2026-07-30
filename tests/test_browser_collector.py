@@ -89,6 +89,13 @@ class BrowserCollectorTests(unittest.TestCase):
         )
         self.assertNotIn("must-not-leak", str(item))
 
+    def test_source_item_preserves_positive_duration_for_budgeting(self):
+        item = browser_collector._source_item(
+            {"aweme_id": "7000000000000000001", "desc": "title", "duration_seconds": 12.5},
+            "2026-07-30T00:00:00+00:00",
+        )
+        self.assertEqual(item["duration_seconds"], 12.5)
+
     def test_collection_paginates_and_filters_invalid_ids(self):
         with patch.object(browser_collector, "BrowserCollector", FakeCollector):
             items = asyncio.run(

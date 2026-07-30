@@ -40,7 +40,7 @@ def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collectio
     title = description.splitlines()[0].strip() if description else ""
     if not title:
         title = f"Douyin favorite {aweme_id}"
-    return {
+    item = {
         "aweme_id": aweme_id,
         "title": title,
         "author": str(raw.get("author") or "").strip(),
@@ -53,6 +53,13 @@ def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collectio
         "source": source,
         "play_url": str(raw.get("play_url") or "").strip(),
     }
+    try:
+        duration = float(raw.get("duration_seconds") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    if duration > 0:
+        item["duration_seconds"] = duration
+    return item
 
 
 class BrowserCollector:
@@ -174,6 +181,7 @@ class BrowserCollector:
                         description: item.desc || '',
                         author: item.author ? item.author.nickname || '' : '',
                         play_url: item.video && item.video.play_addr && item.video.play_addr.url_list ? item.video.play_addr.url_list[0] || '' : '',
+                        duration_seconds: Number(item.video && item.video.duration || 0) / 1000,
                     })),
                 };
             }""",
