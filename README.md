@@ -52,6 +52,27 @@ douyin-favorites-knowledge sync
 
 命令会静默把新增收藏写入知识库。首次设置后不再要求确认；终端只输出本次写入数量。具备定时任务能力的 Agent 会在首次配置后创建并验证每天 **23:00** 的收藏日报；纯命令行安装不假装已创建后台任务。使用 `--dry-run` 才只查看、不写入。
 
+### Obsidian 与飞书
+
+本地 Markdown 是默认且完整的知识库；Obsidian 和飞书均为可选增强，不会阻断同步。
+
+```bash
+# 选择 Vault 与子目录，自动创建收藏/喜欢/日报/模板/系统目录、默认模板和日报索引
+douyin-favorites-knowledge configure-obsidian --vault "我的 Vault" --subdir "抖音知识库"
+
+# 使用环境变量中的 webhook 发送同步摘要；URL 不会写入配置文件
+export FEISHU_WEBHOOK_URL="用户自己的飞书机器人 webhook"
+douyin-favorites-knowledge configure-feishu --mode webhook
+
+# 已有或新建多维表：先在知识库生成字段模板与授权提示
+douyin-favorites-knowledge configure-feishu --mode bitable-existing
+douyin-favorites-knowledge configure-feishu --mode bitable-new
+```
+
+Obsidian 初始化会做一次临时写入检查，并提供“收藏/喜欢”两套默认模板、日报索引和飞书字段模板。同步产生的笔记继续使用可移植 Markdown，不依赖 Obsidian 插件。
+
+飞书 webhook 配置后，通知失败只在同步结果中标为 `not_sent`，本地笔记和防重账本仍会正常写入。多维表模式当前会生成推荐字段（标题、来源类型、作者、原视频、标签、转录状态、沉淀时间、Obsidian 笔记）与授权提示；用户仍须在飞书中登录、创建或选择表格、授权应用并共享表格，Skill 不保存 App Secret 或 webhook。
+
 [GitHub](https://github.com/tars1230/douyin-favorites-to-knowledge) 保存源码、版本和问题反馈；[Gitee](https://gitee.com/tars123/douyin-favorites-to-knowledge) 提供国内下载，并自动同步 `main` 与正式标签。
 
 ## 安装说明
@@ -272,7 +293,7 @@ douyin-favorites-knowledge logout
 | 分析 | 本地模型、MiniMax 或其他 adapter |
 | 通知 | 飞书或其他 adapter |
 
-MiniMax 不是必需项，本地模型也不写死。不同电脑可以选择不同模型。具体能力通过 `module:function` adapter 接入；当前仓库不自动安装模型运行时、MiniMax 客户端或飞书机器人。
+MiniMax 不是必需项，本地模型也不写死。不同电脑可以选择不同模型。具体能力通过 `module:function` adapter 接入；当前仓库不自动安装模型运行时、MiniMax 客户端或飞书机器人。分析默认关闭；启用后 adapter 返回 `{"analysis": {"content_summary": "…", "value_judgment": "…", "deep_analysis": "…", "extensions": "…", "action_items": "…", "related_knowledge": "…"}}`，非空字段才写入笔记。`tags` 仍可由 adapter 单独返回；不要把模型推理过程写入任一字段。
 
 完整配置结构见 [config/config.schema.json](config/config.schema.json)。修改前先完成一次默认 `setup -> sync`，并确认 adapter 能在当前虚拟环境中导入。所有凭据只能来自环境变量、系统钥匙串或 Secret Manager。
 

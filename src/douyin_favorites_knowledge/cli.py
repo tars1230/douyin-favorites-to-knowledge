@@ -14,6 +14,7 @@ from .bailian import transcribe as transcribe_with_bailian
 from .browser_collector import browser_status, collect_browser_favorites, login_browser, logout_browser
 from .config import Config, StageConfig, default_config_path, load_config
 from .local_whisper import check_environment as check_local_whisper_environment
+from .knowledge_setup import initialize_obsidian, write_feishu_fields_template
 from .local_whisper import transcribe as transcribe_with_local_whisper
 from .provider_discovery import discover as discover_providers
 from .security import safe_error_message
@@ -60,6 +61,13 @@ def parser() -> argparse.ArgumentParser:
     logout.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
 
     commands.add_parser("check-config", help="检查配置并显示已启用模式，不输出敏感信息")
+
+    obsidian = commands.add_parser("configure-obsidian", help="初始化 Obsidian 默认模板并切换知识库目录")
+    obsidian.add_argument("--vault", type=Path, required=True, help="用户选择的 Obsidian Vault 目录")
+    obsidian.add_argument("--subdir", default="抖音知识库", help="Vault 内知识库子目录")
+
+    feishu = commands.add_parser("configure-feishu", help="配置可选飞书通知或生成多维表字段模板")
+    feishu.add_argument("--mode", choices=("webhook", "bitable-existing", "bitable-new"), required=True)
 
     sync = commands.add_parser("sync", help="扫描新增收藏并静默写入知识库")
     _add_sync_arguments(sync)
@@ -253,6 +261,49 @@ def _setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _save_config(path: Path, raw: dict) -> Config:
+    atomic_write_json(path, raw)
+    return load_config(path)
+
+
+def _configure_obsidian(args: argparse.Namespace) -> int:
+    config_path = (args.config or default_config_path()).expanduser().resolve()
+    config = load_config(config_path)
+    knowledge_dir = initialize_obsidian(args.vault, args.subdir)
+    raw = dict(config.raw)
+    raw["knowledge_dir"] = str(knowledge_dir)
+    _save_config(config_path, raw)
+    _print({"status": "ready", "output": "obsidian", "templates": "created", "write_check": "passed"})
+    return 0
+
+
+def _configure_feishu(args: argparse.Namespace) -> int:
+    config_path = (args.config or default_config_path()).expanduser().resolve()
+    config = load_config(config_path)
+    if args.mode != "webhook":
+        write_feishu_fields_template(config.knowledge_dir)
+        _print({"status": "needs_authorization", "output": "feishu_bitable", "fields_template": "created"})
+        return 0
+    raw = dict(config.raw)
+    if raw["schema_version"] == 1:
+        raw.update(
+            {
+                "schema_version": 2,
+                "transcription": {"enabled": False, "provider": "none"},
+                "analysis": {"enabled": False, "provider": "none"},
+            }
+        )
+    raw["mode"] = "full"
+    raw["notification"] = {
+        "enabled": True,
+        "provider": "feishu",
+        "adapter": "douyin_favorites_knowledge.feishu:notify_webhook",
+    }
+    _save_config(config_path, raw)
+    _print({"status": "ready", "output": "feishu_webhook", "credential_source": "FEISHU_WEBHOOK_URL"})
+    return 0
+
+
 def _apply_enricher(raw_items: list[dict], spec: str, context: dict, built_in=None) -> list[dict]:
     enricher = built_in or load_adapter(spec)
     enriched = []
@@ -366,7 +417,11 @@ def _notify_if_configured(config: Config, result: dict) -> None:
     if not configured or not result["promoted_count"]:
         return
     notifier = load_adapter(configured[0])
-    notifier(dict(result), configured[1])
+    try:
+        notifier(dict(result), configured[1])
+    except Exception:
+        result["notification"] = "not_sent"
+        return
     result["notification"] = "sent"
 
 
@@ -467,6 +522,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "setup":
             return _setup(args)
+
+        if args.command == "configure-obsidian":
+            return _configure_obsidian(args)
+
+        if args.command == "configure-feishu":
+            return _configure_feishu(args)
 
         if args.command == "login":
             _print(login_browser(timeout_seconds=args.timeout, channel=args.browser_channel, source=args.source))

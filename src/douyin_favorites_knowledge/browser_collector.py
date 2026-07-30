@@ -141,7 +141,7 @@ class BrowserCollector:
         if self._page is None:
             raise ValueError("browser is not open")
         result = await self._page.evaluate(
-            """async ({apiUrl, cursor, count, source}) => {
+            r"""async ({apiUrl, cursor, count, source}) => {
                 const params = new URLSearchParams({
                     device_platform: 'webapp',
                     aid: '6383',
@@ -160,7 +160,7 @@ class BrowserCollector:
                     });
                 } else {
                     const scripts = [...document.scripts].map(node => node.textContent || '').join('\n');
-                    const match = scripts.match(/"sec_user_id"\\s*:\\s*"([^"\\]+)"/) || scripts.match(/sec_user_id=([^&"\\s]+)/);
+                    const match = scripts.match(/"sec_user_id"\s*:\s*"([^"]+)"/) || scripts.match(/sec_user_id=([^&"\s]+)/);
                     if (!match) return {ok: false, error: 'sec_user_id_missing'};
                     params.set('sec_user_id', match[1]);
                     params.set('max_cursor', String(cursor));

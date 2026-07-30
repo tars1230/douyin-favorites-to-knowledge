@@ -122,6 +122,9 @@ class BrowserCollectorTests(unittest.TestCase):
         self.assertEqual(page.args["apiUrl"], browser_collector.LIKES_API_URL)
         self.assertEqual(page.args["source"], "like")
         self.assertIn("sec_user_id", page.script)
+        self.assertIn('([^\"]+)', page.script)
+        self.assertNotIn('([^"\\\\]+)', page.script)
+        self.assertIn(".join('\\n')", page.script)
 
     def test_invalid_item_limit_is_rejected_before_browser_start(self):
         with self.assertRaisesRegex(ValueError, "between 1 and 10000"):
