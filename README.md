@@ -50,7 +50,7 @@ douyin-favorites-knowledge setup
 douyin-favorites-knowledge sync
 ```
 
-命令会静默把新增收藏写入知识库。首次设置后不再要求确认；终端只输出本次写入数量。具备定时任务能力的 Agent 会默认安排每天 **23:00** 运行收藏日报。使用 `--dry-run` 才只查看、不写入。
+命令会静默把新增收藏写入知识库。首次设置后不再要求确认；终端只输出本次写入数量。具备定时任务能力的 Agent 会在首次配置后创建并验证每天 **23:00** 的收藏日报；纯命令行安装不假装已创建后台任务。使用 `--dry-run` 才只查看、不写入。
 
 [GitHub](https://github.com/tars1230/douyin-favorites-to-knowledge) 保存源码、版本和问题反馈；[Gitee](https://gitee.com/tars123/douyin-favorites-to-knowledge) 提供国内下载，并自动同步 `main` 与正式标签。
 
@@ -140,13 +140,13 @@ douyin-favorites-knowledge sync --no-login-prompt
 
 ### 每晚 23:00 日报
 
-首次配置完成后，具备定时任务能力的 Agent 默认在本机每天 **23:00** 运行：
+首次配置完成后，具备定时任务能力的 Agent 必须创建并验证本机每天 **23:00** 运行：
 
 ```bash
 douyin-favorites-knowledge daily --source collection --no-login-prompt
 ```
 
-它会静默同步新增收藏，并在知识库的 `日报/` 目录生成当天的 Markdown 日报；没有新增也会写明“今日没有新增条目”。登录失效时任务失败但不会弹出浏览器，下一次用户运行 `douyin-favorites-knowledge login` 后自动恢复。手动安装不假装提供跨平台后台服务，直接运行同一条 `daily` 命令即可。
+它会静默同步新增收藏，并在知识库的 `日报/` 目录生成当天的 Markdown 日报；没有新增也会写明“今日没有新增条目”。登录失效时任务失败但不会弹出浏览器，下一次用户运行 `douyin-favorites-knowledge login` 后自动恢复。任务创建失败或当前 Agent 没有 scheduler 能力时，必须明确报告“自动日报未启用”；手动安装则直接运行同一条 `daily` 命令。
 
 ### 收藏与喜欢
 
