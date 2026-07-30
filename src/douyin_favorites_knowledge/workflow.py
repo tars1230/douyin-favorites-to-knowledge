@@ -18,6 +18,14 @@ from .security import assert_safe_value
 SCHEMA_VERSION = 1
 AWEME_ID = re.compile(r"^[0-9]{6,30}$")
 SOURCES = frozenset({"collection", "like", "import"})
+ANALYSIS_FIELDS = (
+    "content_summary",
+    "value_judgment",
+    "deep_analysis",
+    "extensions",
+    "action_items",
+    "related_knowledge",
+)
 
 
 def utc_now() -> str:
@@ -74,6 +82,28 @@ def _text(raw: dict[str, Any], key: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+def _analysis(raw: dict[str, Any]) -> dict[str, str]:
+    value = raw.get("analysis")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("item analysis must be an object")
+    unknown = set(value) - set(ANALYSIS_FIELDS)
+    if unknown:
+        raise ValueError(f"item analysis has unknown fields: {sorted(unknown)}")
+    result: dict[str, str] = {}
+    for key in ANALYSIS_FIELDS:
+        if key not in value:
+            continue
+        field_value = value[key]
+        if not isinstance(field_value, str):
+            raise ValueError(f"item analysis {key} must be a string")
+        text = field_value.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if text:
+            result[key] = text
+    return result
+
+
 def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("each source item must be an object")
@@ -104,6 +134,9 @@ def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
         "source_url": f"https://www.douyin.com/video/{aweme_id}",
         "source": source,
     }
+    analysis = _analysis(raw)
+    if analysis:
+        item["analysis"] = analysis
     item["content_sha256"] = sha256_bytes(canonical_json(item))
     item["note"] = render_note(item)
     return item
@@ -127,12 +160,31 @@ def render_note(item: dict[str, Any]) -> str:
         f"# {item['title']}",
         "",
     ]
-    if item["description"]:
-        lines.extend(["## Description", "", item["description"], ""])
-    if item["transcript"]:
-        lines.extend(["## Transcript", "", item["transcript"], ""])
-    elif item["transcript_status"] != "not_requested":
-        lines.extend(["## Transcript", "", "未获得语音转录；上方 Description 仅是原始描述，不是逐字稿。", ""])
+    analysis = item.get("analysis", {})
+    if analysis.get("content_summary"):
+        lines.extend(["## 要点", "", analysis["content_summary"], ""])
+
+    if item["description"] or item["transcript"] or item["transcript_status"] != "not_requested":
+        lines.extend(["## 原始材料", ""])
+        if item["description"]:
+            lines.extend(["### 原始描述", "", item["description"], ""])
+        if item["transcript"]:
+            lines.extend(["### 转录", "", item["transcript"], ""])
+        elif item["transcript_status"] != "not_requested":
+            lines.extend(["### 转录", "", "未获得语音转录；上方原始描述不是逐字稿。", ""])
+
+    analysis_sections = (
+        ("value_judgment", "价值判断"),
+        ("deep_analysis", "深度分析"),
+        ("extensions", "延展补充"),
+        ("action_items", "行动启示"),
+        ("related_knowledge", "关联知识"),
+    )
+    if any(analysis.get(key) for key, _ in analysis_sections):
+        lines.extend(["## 研判", ""])
+    for key, heading in analysis_sections:
+        if analysis.get(key):
+            lines.extend([f"### {heading}", "", analysis[key], ""])
     lines.extend(["## Source", "", item["source_url"], ""])
     note = "\n".join(lines)
     assert_safe_value(note, f"note:{item['aweme_id']}")
@@ -242,13 +294,19 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
             "content_sha256",
             "note",
         }
-        if set(item) != required:
+        optional = {"analysis"}
+        if set(item) - optional != required or not set(item) <= required | optional:
             raise ValueError(f"review item {index} fields do not match schema")
         aweme_id = item["aweme_id"]
         if aweme_id in seen:
             raise ValueError(f"duplicate aweme_id in review: {aweme_id}")
         seen.add(aweme_id)
         base = {key: item[key] for key in required - {"content_sha256", "note"}}
+        if "analysis" in item:
+            normalized_analysis = _analysis({"analysis": item["analysis"]})
+            if normalized_analysis != item["analysis"]:
+                raise ValueError(f"invalid analysis fields for {aweme_id}")
+            base["analysis"] = item["analysis"]
         expected_hash = sha256_bytes(canonical_json(base))
         if item["content_sha256"] != expected_hash:
             raise ValueError(f"content hash mismatch for {aweme_id}")

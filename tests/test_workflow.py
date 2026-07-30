@@ -328,6 +328,29 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result["login"], "skipped")
         self.assertNotIn(str(self.root), output.getvalue())
 
+    def test_configure_obsidian_creates_templates_and_updates_knowledge_dir(self):
+        vault = self.root / "vault"
+        result = cli(self.config, "configure-obsidian", "--vault", str(vault), "--subdir", "抖音")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        knowledge = vault / "抖音"
+        self.assertTrue((knowledge / "模板" / "抖音收藏.md").exists())
+        template = (knowledge / "模板" / "抖音收藏.md").read_text(encoding="utf-8")
+        self.assertIn("## 原始材料", template)
+        self.assertIn("### 原始描述", template)
+        self.assertNotIn("## 研判", template)
+        self.assertTrue((knowledge / "日报索引.md").exists())
+        self.assertFalse((knowledge / "系统" / ".write-check.md").exists())
+        self.assertEqual(load_config(self.config).knowledge_dir, knowledge.resolve())
+
+    def test_configure_feishu_webhook_keeps_webhook_out_of_config(self):
+        result = cli(self.config, "configure-feishu", "--mode", "webhook")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config_text = self.config.read_text(encoding="utf-8")
+        self.assertNotIn("FEISHU_WEBHOOK_URL", config_text)
+        config = load_config(self.config)
+        self.assertTrue(config.notification.enabled)
+        self.assertEqual(config.notification.provider, "feishu")
+
     def test_setup_opens_login_by_default(self):
         setup_config = self.root / "login-setup" / "config.json"
         output = StringIO()
@@ -614,7 +637,17 @@ class WorkflowTests(unittest.TestCase):
             def analyze(item, context):
                 calls.append((context["stage"], context["provider"], context["model"]))
                 self.assertEqual(item["transcript"], "本地转录结果")
-                return {"tags": ["自动分析"]}
+                return {
+                    "tags": ["自动分析"],
+                    "analysis": {
+                        "content_summary": "视频讲解了公开仓库的发布流程。",
+                        "value_judgment": "4/5：可以直接复用。",
+                        "deep_analysis": "关键在于把发布与验证拆开。",
+                        "extensions": "可结合 CI 记录证据。",
+                        "action_items": "先运行单元测试。",
+                        "related_knowledge": "[[发布清单]]",
+                    },
+                }
 
             return analyze
 
@@ -644,6 +677,18 @@ class WorkflowTests(unittest.TestCase):
         review = json.loads(self.review.read_text(encoding="utf-8"))
         self.assertEqual(review["items"][0]["transcript"], "本地转录结果")
         self.assertEqual(review["items"][0]["tags"], ["自动分析"])
+        self.assertIn("## 要点", review["items"][0]["note"])
+        self.assertIn("## 研判", review["items"][0]["note"])
+        self.assertIn("[[发布清单]]", review["items"][0]["note"])
+
+    def test_analysis_rejects_unknown_fields(self):
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        payload["items"][0]["analysis"] = {"unsupported": "value"}
+        source = self.root / "invalid-analysis.json"
+        source.write_text(json.dumps(payload), encoding="utf-8")
+        result = self.scan(source)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("analysis has unknown fields", result.stderr)
 
     def test_light_mode_rejects_enabled_optional_stage(self):
         self.config.write_text(

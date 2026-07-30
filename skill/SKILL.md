@@ -35,6 +35,16 @@ douyin-favorites-knowledge setup
 
 让用户选择 Markdown 或 Obsidian 知识库目录，再让用户选择转录方案。推荐百炼云端；本地 Whisper 只有用户愿意下载模型、承担本机资源时才选；`none` 只保存描述与链接。不要要求用户复制 Cookie。默认来源是收藏；仅当用户明确说“喜欢”或“点赞”时，向 `login`/`sync` 传 `--source like`。
 
+用户明确选择 Obsidian 时，在已有 setup 后执行：
+
+```bash
+douyin-favorites-knowledge configure-obsidian --vault "用户选择的 Vault" --subdir "抖音知识库"
+```
+
+它会切换知识库目录并创建默认模板、日报索引和写入检查。不要猜测 Vault 位置。
+
+飞书默认关闭且不影响本地同步。用户主动选择 webhook 通知时，让其自行把 webhook 放入安全环境变量 `FEISHU_WEBHOOK_URL`，随后运行 `configure-feishu --mode webhook`；不要把 URL 写入配置。用户选择已有或新建多维表时运行对应的 `configure-feishu --mode bitable-existing|bitable-new` 生成字段模板和授权提示。用户必须自行完成飞书登录、应用授权、建表或选表和共享权限；无授权时返回提示，不得假装多维表已经写入。
+
 如果 Agent 在非交互环境执行，明确指定目录：
 
 ```bash
@@ -106,6 +116,7 @@ douyin-favorites-knowledge status
 - 凭据只从环境变量、系统钥匙串或 Secret Manager 读取；
 - 当前仓库不内置 MiniMax ASR；检测到仅有 MiniMax TTS 或 Key 时必须说明“不可用于转录”，不能假装可用；
 - 转录、分析和通知通过 `module:function` adapter 接入。
+- 分析默认关闭。用户明确启用时，analysis adapter 只返回结构化的 `analysis` 对象：`content_summary`、`value_judgment`、`deep_analysis`、`extensions`、`action_items`、`related_knowledge`；只有非空字段会写入笔记。不得写入模型的推理过程。
 
 原子命令 `scan -> review -> promote` 只保留给局部审核、调试和迁移。不要把它暴露为普通用户的日常步骤；不得为了自动化把哈希、重复 ID、敏感信息或冲突文件错误降级为警告。
 
