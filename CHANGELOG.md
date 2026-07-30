@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.0
+
+- 移除第三方 `douyin-mcp` 转录兼容层；公开版本只保留百炼直连、本地 Whisper 和不转录三种路径。
+- 百炼成本说明增加 10 元可转录时长与按月使用频率的估算，避免把低成本表达成无条件的“多年可用”。
+- 旧版 `transcription.provider: douyin_mcp` 配置不再支持；请改为 `bailian` 并安装 `.[bailian-asr]`。
+- 新增 `daily`：静默同步并在知识库写入每日 Markdown 日报；默认安排每天 23:00 跑收藏，喜欢仅在用户明确启用时独立运行。
+
+## 1.5.1
+
+- `sync` 改为默认静默增量写入；首次配置和登录后，不再要求每次确认新增收藏。
+- 保留 `--dry-run` 用于只查看新增，`--yes` 仅作为旧脚本兼容参数。
+
 ## 1.5.0
 
 - 新安装默认直连阿里云百炼 `qwen3-asr-flash`，只需 `DASHSCOPE_API_KEY` 与可选依赖 `.[bailian-asr]`，不再要求安装第三方 `douyin-mcp`。

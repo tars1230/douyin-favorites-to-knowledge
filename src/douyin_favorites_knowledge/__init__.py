@@ -1,3 +1,3 @@
-"""Public core for reviewed Douyin-favorite knowledge promotion."""
+"""Public core for silent Douyin-favorite knowledge synchronization."""
 
-__version__ = "1.5.0"
+__version__ = "2.0.0"

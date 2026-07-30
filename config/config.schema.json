@@ -43,7 +43,7 @@
       "required": ["enabled", "provider", "model"],
       "properties": {
         "enabled": {"const": true},
-        "provider": {"enum": ["bailian", "douyin_mcp", "local_whisper"]},
+        "provider": {"enum": ["bailian", "local_whisper"]},
         "model": {"type": "string", "minLength": 1}
       }
     },

@@ -206,7 +206,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(self.ledger.exists())
 
     def test_scan_defaults_to_authorized_browser_collector(self):
-        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+        source_items = [{**item, "source": "collection"} for item in json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]]
         output = StringIO()
         with patch(
             "douyin_favorites_knowledge.cli.collect_browser_favorites",
@@ -381,7 +381,7 @@ class WorkflowTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertIn("DASHSCOPE_API_KEY", result["next_step"])
 
-    def test_bailian_stage_does_not_call_mcp_adapter(self):
+    def test_bailian_stage_uses_direct_provider(self):
         self.config.write_text(json.dumps({
             "schema_version": 2, "mode": "full", "knowledge_dir": "knowledge", "ledger_path": "state/ledger.sqlite3",
             "transcription": {"enabled": True, "provider": "bailian", "model": "qwen3-asr-flash"},
@@ -391,10 +391,9 @@ class WorkflowTests(unittest.TestCase):
         item = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"][0]
         with patch("douyin_favorites_knowledge.cli.check_bailian_environment", return_value={"ready": True}), patch(
             "douyin_favorites_knowledge.cli.transcribe_with_bailian", return_value={"transcript": "文本", "transcript_status": "success"}
-        ) as bailian_transcribe, patch("douyin_favorites_knowledge.cli.transcribe_with_douyin_mcp") as mcp_transcribe:
+        ) as bailian_transcribe:
             enriched = _apply_configured_stages([item], load_config(self.config))
         bailian_transcribe.assert_called_once()
-        mcp_transcribe.assert_not_called()
         self.assertEqual(enriched[0]["transcript"], "文本")
 
     def test_cloud_check_config_shows_pricing_without_credentials(self):
@@ -405,7 +404,7 @@ class WorkflowTests(unittest.TestCase):
                     "mode": "full",
                     "knowledge_dir": "knowledge",
                     "ledger_path": "state/ledger.sqlite3",
-                    "transcription": {"enabled": True, "provider": "douyin_mcp", "model": "qwen3-asr-flash"},
+                    "transcription": {"enabled": True, "provider": "bailian", "model": "qwen3-asr-flash"},
                     "analysis": {"enabled": False, "provider": "none"},
                     "notification": {"enabled": False, "provider": "none"},
                 }
@@ -413,11 +412,12 @@ class WorkflowTests(unittest.TestCase):
             encoding="utf-8",
         )
         output = StringIO()
-        with patch("douyin_favorites_knowledge.cli.check_douyin_mcp_environment", return_value={"ready": True}), redirect_stdout(output):
+        with patch("douyin_favorites_knowledge.cli.check_bailian_environment", return_value={"ready": True}), redirect_stdout(output):
             returncode = main(["--config", str(self.config), "check-config"])
         self.assertEqual(returncode, 0)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["cloud_transcription_pricing"]["unit_rmb_per_second"], 0.00022)
+        self.assertEqual(payload["cloud_transcription_pricing"]["estimated_audio_hours_per_10_rmb"], 12.63)
         self.assertNotIn(str(self.root), output.getvalue())
 
     def test_legacy_collection_ledger_is_not_reimported(self):
@@ -475,36 +475,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("setup --force", errors.getvalue())
         self.assertFalse((self.root / "another-knowledge").exists())
 
-    def test_sync_previews_and_promotes_after_confirmation(self):
+    def test_sync_silently_promotes_new_favorites(self):
         source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
         output = StringIO()
         with patch(
             "douyin_favorites_knowledge.cli.collect_browser_favorites",
             return_value=source_items,
-        ), patch("builtins.input", return_value="y") as prompt, redirect_stdout(output):
+        ), patch("builtins.input") as prompt, redirect_stdout(output):
             returncode = main(["--config", str(self.config), "sync"])
         self.assertEqual(returncode, 0)
-        prompt.assert_called_once_with("确认写入知识库？[y/N]: ")
-        self.assertIn("发现 2 条新增收藏", output.getvalue())
-        result = json.loads(output.getvalue().splitlines()[-1])
+        prompt.assert_not_called()
+        result = json.loads(output.getvalue())
         self.assertEqual(result["status"], "committed")
         self.assertEqual(result["promoted_count"], 2)
         self.assertEqual(len(list(self.knowledge.glob("*.md"))), 2)
 
-    def test_sync_cancel_keeps_knowledge_and_ledger_untouched(self):
-        source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
-        output = StringIO()
-        with patch(
-            "douyin_favorites_knowledge.cli.collect_browser_favorites",
-            return_value=source_items,
-        ), patch("builtins.input", return_value="n"), redirect_stdout(output):
-            returncode = main(["--config", str(self.config), "sync"])
-        self.assertEqual(returncode, 0)
-        self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["status"], "cancelled")
-        self.assertFalse(self.knowledge.exists())
-        self.assertFalse(self.ledger.exists())
-
-    def test_sync_yes_supports_noninteractive_automation(self):
+    def test_sync_yes_remains_compatible_but_is_not_required(self):
         source_items = json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
         output = StringIO()
         with patch(
@@ -546,10 +532,34 @@ class WorkflowTests(unittest.TestCase):
             returncode = main(["--config", str(self.config), "sync", "--dry-run"])
         self.assertEqual(returncode, 0)
         result = json.loads(output.getvalue())
-        self.assertEqual(result["status"], "review_required")
+        self.assertEqual(result["status"], "dry_run")
         self.assertEqual(len(result["preview"]), 2)
         self.assertFalse(self.knowledge.exists())
         self.assertFalse(self.ledger.exists())
+
+    def test_daily_writes_a_collection_report_without_prompting(self):
+        source_items = [{**item, "source": "collection"} for item in json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]]
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=source_items,
+        ), patch("builtins.input") as prompt, redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "daily", "--date", "2026-07-30"])
+        self.assertEqual(returncode, 0)
+        prompt.assert_not_called()
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["daily_report"], "written")
+        report = self.knowledge / "日报" / "2026-07-30-收藏日报.md"
+        self.assertIn("今日新增 2 条", report.read_text(encoding="utf-8"))
+        self.assertIn("[[collection-7000000000000000001|", report.read_text(encoding="utf-8"))
+
+    def test_daily_keeps_like_reports_separate(self):
+        source_items = [{**item, "source": "like"} for item in json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]]
+        with patch("douyin_favorites_knowledge.cli.collect_browser_favorites", return_value=source_items), redirect_stdout(StringIO()):
+            returncode = main(["--config", str(self.config), "daily", "--source", "like", "--date", "2026-07-30"])
+        self.assertEqual(returncode, 0)
+        self.assertTrue((self.knowledge / "日报" / "2026-07-30-喜欢日报.md").exists())
+        self.assertTrue((self.knowledge / "like-7000000000000000001.md").exists())
 
     def test_full_mode_runs_configured_stages_in_order(self):
         self.config.write_text(
@@ -680,6 +690,25 @@ class WorkflowTests(unittest.TestCase):
         result = self.scan()
         self.assertEqual(result.returncode, 1)
         self.assertIn("unsupported analysis provider", result.stderr)
+
+    def test_legacy_douyin_mcp_provider_is_rejected(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "transcription": {"enabled": True, "provider": "douyin_mcp", "model": "legacy"},
+                    "analysis": {"enabled": False, "provider": "none"},
+                    "notification": {"enabled": False, "provider": "none"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = cli(self.config, "check-config")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unsupported transcription provider", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
     def test_invalid_schema_version_type_is_reported_without_traceback(self):

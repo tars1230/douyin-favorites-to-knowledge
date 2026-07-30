@@ -50,7 +50,7 @@ douyin-favorites-knowledge setup
 douyin-favorites-knowledge sync
 ```
 
-命令会列出本次新增收藏。输入 `y` 后才会写入知识库；输入其他内容会取消，不改任何文件。
+命令会静默把新增收藏写入知识库。首次设置后不再要求确认；终端只输出本次写入数量。具备定时任务能力的 Agent 会默认安排每天 **23:00** 运行收藏日报。使用 `--dry-run` 才只查看、不写入。
 
 [GitHub](https://github.com/tars1230/douyin-favorites-to-knowledge) 保存源码、版本和问题反馈；[Gitee](https://gitee.com/tars123/douyin-favorites-to-knowledge) 提供国内下载，并自动同步 `main` 与正式标签。
 
@@ -116,12 +116,11 @@ douyin-favorites-knowledge setup --force --knowledge-dir "新的知识库目录"
 ### `sync` 做了什么
 
 ```text
-扫描新增收藏 -> 展示标题 -> 等待确认 -> 写入 Markdown -> 记录防重账本
+扫描新增收藏 -> 写入 Markdown -> 记录防重账本
 ```
 
 - 没有新增时返回 `no_changes`；
-- 有新增时先展示标题，不会直接写入；
-- 确认后返回 `committed`；
+- 有新增时静默写入，返回 `committed`；
 - 同一条收藏再次同步不会重复入库；
 - 登录过期时会重新打开登录页，而不是误报“没有新增”。
 
@@ -131,18 +130,28 @@ douyin-favorites-knowledge setup --force --knowledge-dir "新的知识库目录"
 douyin-favorites-knowledge sync --dry-run
 ```
 
-用于明确授权的无人值守任务：
+登录过期时不打开登录页、直接失败：
 
 ```bash
-douyin-favorites-knowledge sync --yes --no-login-prompt
+douyin-favorites-knowledge sync --no-login-prompt
 ```
 
-`--yes` 表示批准本次全部新增；`--no-login-prompt` 表示登录过期时直接失败。项目提供同步命令，但不会擅自创建系统定时任务。
+`--no-login-prompt` 表示登录过期时直接失败。`--yes` 仅为旧脚本兼容保留，不再需要。
+
+### 每晚 23:00 日报
+
+首次配置完成后，具备定时任务能力的 Agent 默认在本机每天 **23:00** 运行：
+
+```bash
+douyin-favorites-knowledge daily --source collection --no-login-prompt
+```
+
+它会静默同步新增收藏，并在知识库的 `日报/` 目录生成当天的 Markdown 日报；没有新增也会写明“今日没有新增条目”。登录失效时任务失败但不会弹出浏览器，下一次用户运行 `douyin-favorites-knowledge login` 后自动恢复。手动安装不假装提供跨平台后台服务，直接运行同一条 `daily` 命令即可。
 
 ### 收藏与喜欢
 
-- **收藏（默认）**：`showTab=favorite_collection` / `listcollection`，是用户主动筛选的知识候选集。
-- **喜欢（可选）**：`showTab=like` / `favorite`，是另一套独立列表，通常量更大、噪声更多。
+- **收藏（默认）**：`showTab=favorite_collection` / `listcollection`，是用户主动筛选的知识候选集；默认每天 23:00 同步并出日报。
+- **喜欢（可选）**：`showTab=like` / `favorite`，是另一套独立列表，通常量更大、噪声更多；默认不扫，避免把“随手点赞”混进知识库。
 
 对 Agent 说“同步我的抖音收藏”或不指定来源时，一律运行收藏；只有用户明确说“喜欢”“点赞”才运行：
 
@@ -151,6 +160,14 @@ douyin-favorites-knowledge sync --source like
 ```
 
 两类来源有独立的防重键和 Markdown 文件名，防止历史上“收藏与喜欢混成同一增量状态”的漏采事故。
+
+用户明确说“转录我的喜欢”或“给喜欢列表出日报”时，使用同一套已选择的百炼或本地 Whisper 转录能力：
+
+```bash
+douyin-favorites-knowledge daily --source like --no-login-prompt
+```
+
+喜欢笔记命名为 `like-*.md`，日报命名为 `日报/YYYY-MM-DD-喜欢日报.md`，与收藏完全隔离。
 
 ## 视频转录与费用
 
@@ -173,9 +190,7 @@ douyin-favorites-knowledge setup --transcription bailian
 douyin-favorites-knowledge check-config
 ```
 
-`douyin-mcp-server` 是开源第三方项目（不是抖音或阿里云官方），仅保留给已有配置的兼容使用；新用户不需要安装它。其历史版本使用过不同转录服务，因此不要把任意本机 `douyin-mcp` 配置当成百炼可用的证明。
-
-截至 **2026-07-30**，阿里云百炼[官方价格页](https://help.aliyun.com/zh/model-studio/model-pricing)列出的华北 2（北京）`qwen3-asr-flash` 为 **0.00022 元/秒**，输出不计费：约 **0.0132 元/分钟**、**0.132 元/10 分钟**、**0.792 元/小时**。该地域页面同时列出 **36,000 秒（10 小时）**免费额度，说明有效期为自开通百炼、模型发布或申请通过之日起（取较晚者）90 天；其他地域的额度规则不同。
+截至 **2026-07-30**，阿里云百炼[官方价格页](https://help.aliyun.com/zh/model-studio/model-pricing)列出的华北 2（北京）`qwen3-asr-flash` 为 **0.00022 元/秒**，输出不计费：约 **0.0132 元/分钟**、**0.132 元/10 分钟**、**0.792 元/小时**。成本门槛很低：**10 元约可转录 12.6 小时音频（约 758 分钟）**；若每月收藏并转录 10 分钟，约可使用 **6 年多**，即使每月 1 小时也约够 **1 年**。实际时长取决于每条视频长度和使用频率。该地域页面同时列出 **36,000 秒（10 小时）**免费额度，说明有效期为自开通百炼、模型发布或申请通过之日起（取较晚者）90 天；其他地域的额度规则不同。
 
 价格、地域、免费额度和活动会变动，`check-config` 只提供上述估算。**实际扣费以百炼控制台账单为准**。本机没有可公开的百炼账单导出，因此项目不宣称“每条视频实际花了多少钱”。
 
@@ -194,7 +209,7 @@ douyin-favorites-knowledge check-config
 
 ## 输出结果
 
-每条批准收藏生成一份独立 Markdown 文件，包含：
+每条新增收藏生成一份独立 Markdown 文件，包含：
 
 - 标题、作者和抖音原始地址；
 - 收藏描述；
@@ -229,7 +244,7 @@ douyin-favorites-knowledge logout
 | `candidate_count` 为 `0` | 当前没有未入库的新收藏，不是错误 |
 | `secret-like key blocked` | 从配置删除密钥、Cookie 或 token，改用环境变量或密钥管理器 |
 | 想更换知识库目录 | 运行 `douyin-favorites-knowledge setup --force` |
-| 自动任务等待确认 | 使用显式参数 `sync --yes --no-login-prompt` |
+| 每晚任务因登录失效失败 | 运行 `douyin-favorites-knowledge login`，下次 23:00 自动恢复 |
 | 百炼未就绪 | 设置 `DASHSCOPE_API_KEY`，安装 `python -m pip install '.[bailian-asr]'`，再运行 `check-config` |
 | 本地转录未就绪 | 安装 `.[local-asr]`、`ffmpeg`，并留出至少 1.5 GB 临时空间 |
 
