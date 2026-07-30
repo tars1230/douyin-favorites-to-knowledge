@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 from .adapters import load_adapter
@@ -10,14 +11,13 @@ from .bailian import check_environment as check_bailian_environment
 from .bailian import transcribe as transcribe_with_bailian
 from .browser_collector import browser_status, collect_browser_favorites, login_browser, logout_browser
 from .config import Config, StageConfig, default_config_path, load_config
-from .douyin_mcp import check_environment as check_douyin_mcp_environment
-from .douyin_mcp import transcribe as transcribe_with_douyin_mcp
 from .local_whisper import check_environment as check_local_whisper_environment
 from .local_whisper import transcribe as transcribe_with_local_whisper
 from .provider_discovery import discover as discover_providers
 from .security import safe_error_message
 from .workflow import (
     atomic_write_json,
+    atomic_write_text,
     build_approval,
     build_review,
     promote,
@@ -27,7 +27,7 @@ from .workflow import (
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="将审核通过的抖音收藏写入本地知识库")
+    root = argparse.ArgumentParser(description="将已授权的抖音收藏静默同步到本地知识库")
     root.add_argument("--config", type=Path, help="可选配置路径；setup 后通常不需要填写")
     commands = root.add_subparsers(dest="command", required=True)
 
@@ -41,10 +41,6 @@ def parser() -> argparse.ArgumentParser:
     transcription.add_argument(
         "--transcription", choices=("bailian", "cloud", "local", "none"),
         help="非交互时明确选择：bailian（推荐百炼）、local（本地 Whisper）或 none；cloud 是 bailian 的兼容别名",
-    )
-    transcription.add_argument(
-        "--enable-douyin-mcp-transcription", action="store_true",
-        help="兼容旧命令，等同于 --transcription bailian",
     )
 
     login = commands.add_parser("login", help="打开本地浏览器并保存授权登录状态")
@@ -60,14 +56,13 @@ def parser() -> argparse.ArgumentParser:
 
     commands.add_parser("check-config", help="检查配置并显示已启用模式，不输出敏感信息")
 
-    sync = commands.add_parser("sync", help="扫描新增收藏，确认后写入知识库")
-    sync.add_argument("--yes", action="store_true", help="明确批准本次全部新增，适合自动任务")
-    sync.add_argument("--max-items", type=int, default=200, help="浏览器单次最多采集条数")
-    sync.add_argument("--headed", action="store_true", help="采集时保持浏览器可见")
-    sync.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
-    sync.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
-    sync.add_argument("--dry-run", action="store_true", help="只显示新增候选，不写入知识库")
-    sync.add_argument("--source", choices=("collection", "like"), default="collection", help="默认收藏；喜欢需明确选择")
+    sync = commands.add_parser("sync", help="扫描新增收藏并静默写入知识库")
+    _add_sync_arguments(sync)
+    sync.add_argument("--yes", action="store_true", help="兼容旧版本；同步默认已静默写入")
+
+    daily = commands.add_parser("daily", help="同步并生成当天 Markdown 日报")
+    _add_sync_arguments(daily)
+    daily.add_argument("--date", type=date.fromisoformat, help="日报日期（YYYY-MM-DD，默认今天）")
 
     scan = commands.add_parser("scan", help="生成待审核清单，不修改知识库")
     source = scan.add_mutually_exclusive_group()
@@ -100,6 +95,15 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
+def _add_sync_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--max-items", type=int, default=200, help="浏览器单次最多采集条数")
+    command.add_argument("--headed", action="store_true", help="采集时保持浏览器可见")
+    command.add_argument("--no-login-prompt", action="store_true", help="登录失效时直接失败，不打开登录页")
+    command.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
+    command.add_argument("--dry-run", action="store_true", help="只显示新增候选，不写入知识库")
+    command.add_argument("--source", choices=("collection", "like"), default="collection", help="默认收藏；喜欢需明确选择")
+
+
 def _print(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
@@ -120,17 +124,8 @@ def _config_summary(config: Config) -> dict:
             "model": "qwen3-asr-flash",
             "unit_rmb_per_second": 0.00022,
             "estimated_rmb_per_minute": 0.0132,
-            "north_china_2_free_seconds": 36000,
-            "official_pricing": "https://help.aliyun.com/zh/model-studio/model-pricing",
-            "note": "官方价格页于 2026-07-30 核验；地域、额度和价格会变化，以控制台账单为准。",
-        }
-    elif config.transcription.enabled and config.transcription.provider == "douyin_mcp":
-        readiness = check_douyin_mcp_environment()
-        pricing = {
-            "currency": "CNY",
-            "model": "qwen3-asr-flash",
-            "unit_rmb_per_second": 0.00022,
-            "estimated_rmb_per_minute": 0.0132,
+            "estimated_audio_minutes_per_10_rmb": 757.6,
+            "estimated_audio_hours_per_10_rmb": 12.63,
             "north_china_2_free_seconds": 36000,
             "official_pricing": "https://help.aliyun.com/zh/model-studio/model-pricing",
             "note": "官方价格页于 2026-07-30 核验；地域、额度和价格会变化，以控制台账单为准。",
@@ -180,8 +175,6 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
 
 
 def _choose_transcription(args: argparse.Namespace) -> str:
-    if args.enable_douyin_mcp_transcription:
-        return "bailian"
     if args.transcription:
         return "bailian" if args.transcription == "cloud" else args.transcription
     discovery = discover_providers()
@@ -269,11 +262,6 @@ def _apply_configured_stages(raw_items: list[dict], config: Config) -> list[dict
             if not readiness["ready"]:
                 raise ValueError(f"Bailian transcription is not ready: {', '.join(readiness['missing'])}")
             raw_items = _apply_enricher(raw_items, "", stage.context(config.mode), transcribe_with_bailian)
-        elif stage.name == "transcription" and stage.provider == "douyin_mcp":
-            readiness = check_douyin_mcp_environment()
-            if not readiness["ready"]:
-                raise ValueError(f"douyin-mcp transcription is not ready: {', '.join(readiness['missing'])}")
-            raw_items = _apply_enricher(raw_items, "", stage.context(config.mode), transcribe_with_douyin_mcp)
         elif stage.name == "transcription" and stage.provider == "local_whisper":
             readiness = check_local_whisper_environment()
             if not readiness["ready"]:
@@ -300,7 +288,34 @@ def _notify_if_configured(config: Config, result: dict) -> None:
     result["notification"] = "sent"
 
 
-def _sync(args: argparse.Namespace, config: Config) -> int:
+def _write_daily_report(config: Config, source: str, report_date: date, items: list[dict]) -> None:
+    source_name = "收藏" if source == "collection" else "喜欢"
+    lines = [
+        "---",
+        f"date: {json.dumps(report_date.isoformat())}",
+        f"source: {json.dumps(source)}",
+        f"new_count: {len(items)}",
+        "---",
+        "",
+        f"# {report_date.isoformat()} 抖音{source_name}日报",
+        "",
+        f"今日新增 {len(items)} 条。",
+        "",
+    ]
+    if items:
+        lines.extend(["## 新增笔记", ""])
+        for item in items:
+            note_name = f"{item['source']}-{item['aweme_id']}"
+            author = f" - {item['author']}" if item["author"] else ""
+            lines.append(f"- [[{note_name}|{item['title']}]]{author} ([原链接]({item['source_url']}))")
+    else:
+        lines.append("今日没有新增条目。")
+    lines.append("")
+    suffix = "收藏" if source == "collection" else "喜欢"
+    atomic_write_text(config.knowledge_dir / "日报" / f"{report_date.isoformat()}-{suffix}日报.md", "\n".join(lines))
+
+
+def _sync(args: argparse.Namespace, config: Config, report_date: date | None = None) -> int:
     raw_items = collect_browser_favorites(
         max_items=args.max_items,
         interactive_login=not args.no_login_prompt,
@@ -308,34 +323,27 @@ def _sync(args: argparse.Namespace, config: Config) -> int:
         channel=args.browser_channel,
         source=args.source,
     )
+    mismatched = [item for item in raw_items if item.get("source") and item["source"] != args.source]
+    if mismatched:
+        raise ValueError(f"collector returned items outside requested source: {args.source}")
     raw_items = _apply_configured_stages(list(raw_items), config)
     manifest = build_review(config, raw_items, f"authorized_browser:{args.source}")
     candidates = manifest["items"]
     if not candidates:
-        _print({"status": "no_changes"})
+        summary = {"status": "no_changes"}
+        if report_date:
+            _write_daily_report(config, args.source, report_date, [])
+            summary["daily_report"] = "written"
+        _print(summary)
         return 0
 
-    preview = [
-        {"aweme_id": item["aweme_id"], "title": item["title"][:120]}
-        for item in candidates[:20]
-    ]
     if args.dry_run:
-        _print({"status": "review_required", **manifest["summary"], "preview": preview})
+        preview = [
+            {"aweme_id": item["aweme_id"], "title": item["title"][:120]}
+            for item in candidates[:20]
+        ]
+        _print({"status": "dry_run", **manifest["summary"], "preview": preview})
         return 0
-
-    if not args.yes:
-        print(f"发现 {len(candidates)} 条新增{'收藏' if args.source == 'collection' else '喜欢'}：")
-        for item in preview:
-            print(f"- {item['aweme_id']}  {item['title']}")
-        if len(candidates) > len(preview):
-            print(f"- 以及另外 {len(candidates) - len(preview)} 条")
-        try:
-            answer = input("确认写入知识库？[y/N]: ").strip().lower()
-        except EOFError as exc:
-            raise ValueError("非交互同步请明确使用 sync --yes 或 sync --dry-run") from exc
-        if answer not in {"y", "yes"}:
-            _print({"status": "cancelled", "candidate_count": len(candidates)})
-            return 0
 
     runtime_dir = config.ledger_path.parent / "sync"
     review_path = runtime_dir / "review.json"
@@ -353,6 +361,15 @@ def _sync(args: argparse.Namespace, config: Config) -> int:
     }
     if "notification" in result:
         summary["notification"] = result["notification"]
+    if report_date:
+        promoted_ids = set(result["ids"])
+        _write_daily_report(
+            config,
+            args.source,
+            report_date,
+            [item for item in candidates if item["aweme_id"] in promoted_ids],
+        )
+        summary["daily_report"] = "written"
     _print(summary)
     return 0
 
@@ -386,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if summary["status"] in {"valid", "ready"} else 1
         if args.command == "sync":
             return _sync(args, config)
+        if args.command == "daily":
+            return _sync(args, config, args.date or date.today())
         if args.command == "scan":
             if args.input:
                 raw_items = read_input(args.input)

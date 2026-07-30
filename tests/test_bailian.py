@@ -16,7 +16,7 @@ class BailianTests(unittest.TestCase):
                 "missing": ["DASHSCOPE_API_KEY", "dashscope (install .[bailian-asr])"],
             })
 
-    def test_transcribes_play_url_without_mcp_or_local_download(self):
+    def test_transcribes_play_url_without_local_download(self):
         response = SimpleNamespace(output=SimpleNamespace(choices=[SimpleNamespace(
             message=SimpleNamespace(content=[{"text": "完整语音文本"}])
         )]))

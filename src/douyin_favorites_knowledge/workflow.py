@@ -51,6 +51,20 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(temp_name)
 
 
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
 def _text(raw: dict[str, Any], key: str) -> str:
     value = raw.get(key, "")
     if value is None:

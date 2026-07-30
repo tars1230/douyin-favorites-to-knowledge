@@ -32,6 +32,5 @@ def discover() -> dict[str, Any]:
         "bailian": {"state": "ready" if bailian["ready"] else "action_required", **({"missing": bailian["missing"]} if not bailian["ready"] else {})},
         "local_whisper": {"state": "ready" if local["ready"] else "action_required", **({"missing": local["missing"]} if not local["ready"] else {})},
         "minimax": _minimax_status(),
-        "douyin_mcp": {"state": "legacy_optional", "reason": "第三方兼容适配器；直连百炼不需要它"},
         "recommended": "bailian" if bailian["ready"] else ("local" if local["ready"] else "bailian"),
     }
