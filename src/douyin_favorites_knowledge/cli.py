@@ -147,10 +147,11 @@ def _config_summary(config: Config) -> dict:
             "list_price_as_of": "2026-08-05",
             "official_pricing": "https://siliconflow.cn/pricing",
             "official_console": "https://cloud.siliconflow.cn/account/ak",
+            "referral_signup": "https://cloud.siliconflow.cn/i/1srulim9",
             "note": (
                 "抖音 CDN 推荐主路径：本机带 Referer 下载后上传。"
                 "截至 2026-08-05 官方价格页标注 SenseVoiceSmall 为免费；价格会变，"
-                "以 https://siliconflow.cn/pricing 与控制台账单为准，不承诺永久免费。"
+                "以 https://siliconflow.cn/pricing 与控制台账单为准，不承诺永久免费。注册推荐链接：https://cloud.siliconflow.cn/i/1srulim9。"
             ),
         }
     if config.transcription.enabled and config.transcription.provider == "bailian":

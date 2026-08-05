@@ -1,3 +1,8 @@
+## [2.2.2] - 2026-08-05
+
+### Changed
+- 文档/check-config 加入 SiliconFlow 注册推荐链接：https://cloud.siliconflow.cn/i/1srulim9
+
 ## [2.2.1] - 2026-08-05
 
 ### Changed
