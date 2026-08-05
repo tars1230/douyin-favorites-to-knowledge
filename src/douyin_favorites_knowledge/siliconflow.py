@@ -4,11 +4,18 @@
 Douyin ``*.douyinvod.com`` play URLs require browser-like Referer headers and
 cannot be fetched by Bailian server-side URL-ASR. This provider downloads with
 Referer, optionally extracts audio via ffmpeg, and uploads to SiliconFlow.
+
+Media selection:
+1. Prefer ``audio_url`` when present (may be smaller).
+2. Fall back to ``play_url`` / video if audio missing, download fails, or ASR empty.
+Note: Douyin ``music.play_url`` is often BGM, not speech — collectors should only
+populate audio_url when it is likely original/speech audio; we still fall back.
 """
 from __future__ import annotations
 
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +29,8 @@ DEFAULT_MODEL = "FunAudioLLM/SenseVoiceSmall"
 DEFAULT_ENDPOINT = "https://api.siliconflow.cn/v1/audio/transcriptions"
 MAX_MEDIA_BYTES = 512 * 1024 * 1024
 TEMP_PREFIX = "douyin-sf-asr-"
+DEFAULT_BITRATE = "64k"
+DEFAULT_SAMPLE_RATE = "16000"
 
 
 def check_environment() -> dict[str, Any]:
@@ -29,7 +38,6 @@ def check_environment() -> dict[str, Any]:
     missing: list[str] = []
     if not os.environ.get(KEY_NAME, "").strip():
         missing.append(KEY_NAME)
-    # ffmpeg optional: upload raw media if missing
     return {"ready": not missing, **({"missing": missing} if missing else {})}
 
 
@@ -39,6 +47,47 @@ def _failed(status: str) -> dict[str, str]:
         "transcript_source": "siliconflow_sensevoice",
         "transcript_status": status,
     }
+
+
+def _audio_encode_settings() -> tuple[str, str]:
+    """Return (sample_rate, bitrate) for ffmpeg ASR extract."""
+    rate = (os.environ.get("DOUYIN_ASR_SAMPLE_RATE") or DEFAULT_SAMPLE_RATE).strip() or DEFAULT_SAMPLE_RATE
+    if not re.fullmatch(r"\d{4,6}", rate):
+        rate = DEFAULT_SAMPLE_RATE
+    br = (os.environ.get("DOUYIN_ASR_AUDIO_BITRATE") or DEFAULT_BITRATE).strip() or DEFAULT_BITRATE
+    if not re.fullmatch(r"\d{2,4}k", br, flags=re.I):
+        br = DEFAULT_BITRATE
+    return rate, br.lower()
+
+
+def _suffix_for_url(url: str) -> str:
+    path = url.split("?", 1)[0].lower()
+    for ext in (".m4a", ".mp3", ".aac", ".wav", ".mp4", ".webm", ".mov"):
+        if path.endswith(ext):
+            return ext
+    return ".bin"
+
+
+def _looks_like_audio_url(url: str) -> bool:
+    path = url.split("?", 1)[0].lower()
+    return any(path.endswith(ext) for ext in (".m4a", ".mp3", ".aac", ".wav", ".ogg", ".flac"))
+
+
+def _candidate_urls(item: dict[str, Any]) -> list[tuple[str, str]]:
+    """Ordered (kind, url) candidates: audio first, then video/play."""
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for kind, key in (
+        ("audio", "audio_url"),
+        ("play", "play_url"),
+        ("video", "video_url"),
+    ):
+        url = str(item.get(key) or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append((kind, url))
+    return out
 
 
 def _download_media(url: str, destination: Path, max_bytes: int) -> str | None:
@@ -82,6 +131,7 @@ def _download_media(url: str, destination: Path, max_bytes: int) -> str | None:
 def _extract_audio(source: Path, audio: Path) -> bool:
     if not shutil.which("ffmpeg"):
         return False
+    rate, bitrate = _audio_encode_settings()
     completed = subprocess.run(
         [
             "ffmpeg",
@@ -93,9 +143,9 @@ def _extract_audio(source: Path, audio: Path) -> bool:
             "-ac",
             "1",
             "-ar",
-            "16000",
+            rate,
             "-b:a",
-            "64k",
+            bitrate,
             str(audio),
         ],
         capture_output=True,
@@ -104,6 +154,17 @@ def _extract_audio(source: Path, audio: Path) -> bool:
         check=False,
     )
     return completed.returncode == 0 and audio.exists() and audio.stat().st_size > 0
+
+
+def _prepare_upload(source: Path, root: Path) -> Path:
+    """Prefer compact mp3 for upload; fall back to source bytes."""
+    if _looks_like_audio_url(source.name) and source.stat().st_size <= 20 * 1024 * 1024:
+        # Already audio and modest size — still normalize when ffmpeg exists.
+        pass
+    audio_path = root / "audio.mp3"
+    if _extract_audio(source, audio_path):
+        return audio_path
+    return source
 
 
 def _upload_transcribe(path: Path, api_key: str, model: str, endpoint: str) -> str:
@@ -145,12 +206,13 @@ def _upload_transcribe(path: Path, api_key: str, model: str, endpoint: str) -> s
 
 
 def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
-    """Download authorized play_url with Referer and transcribe via SiliconFlow."""
+    """Download media with Referer (audio preferred) and transcribe via SiliconFlow."""
     readiness = check_environment()
     if not readiness["ready"]:
         raise ValueError(f"SiliconFlow transcription is not ready: {', '.join(readiness['missing'])}")
-    play_url = str(item.get("play_url") or "").strip()
-    if not play_url:
+
+    candidates = _candidate_urls(item)
+    if not candidates:
         return _failed("unavailable")
 
     api_key = os.environ[KEY_NAME].strip()
@@ -160,27 +222,33 @@ def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
     model = str(ctx.get("model") or os.environ.get("SILICONFLOW_ASR_MODEL") or DEFAULT_MODEL).strip()
     endpoint = str(os.environ.get("SILICONFLOW_ASR_URL") or DEFAULT_ENDPOINT).strip()
 
+    last_status = "failed"
     try:
         with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as temp_dir:
             root = Path(temp_dir)
-            media_path = root / "source.mp4"
-            err = _download_media(play_url, media_path, max_media_bytes)
-            if err:
-                return _failed(err)
-            upload_path = media_path
-            audio_path = root / "audio.mp3"
-            if _extract_audio(media_path, audio_path):
-                upload_path = audio_path
-            text = _upload_transcribe(upload_path, api_key, model, endpoint)
-    except (OSError, subprocess.TimeoutExpired, TimeoutError, urllib.error.HTTPError, urllib.error.URLError):
+            for kind, url in candidates:
+                media_path = root / f"source-{kind}{_suffix_for_url(url)}"
+                err = _download_media(url, media_path, max_media_bytes)
+                if err:
+                    last_status = err
+                    continue
+                upload_path = _prepare_upload(media_path, root)
+                try:
+                    text = _upload_transcribe(upload_path, api_key, model, endpoint)
+                except (OSError, TimeoutError, urllib.error.HTTPError, urllib.error.URLError):
+                    last_status = "failed"
+                    continue
+                if text:
+                    return {
+                        "transcript": text,
+                        "transcript_source": "siliconflow_sensevoice",
+                        "transcript_status": "success",
+                        "media_kind_used": kind,
+                    }
+                last_status = "unavailable"
+    except (OSError, subprocess.TimeoutExpired, TimeoutError):
         return _failed("failed")
     except Exception:
         return _failed("failed")
 
-    if not text:
-        return _failed("unavailable")
-    return {
-        "transcript": text,
-        "transcript_source": "siliconflow_sensevoice",
-        "transcript_status": "success",
-    }
+    return _failed(last_status)
