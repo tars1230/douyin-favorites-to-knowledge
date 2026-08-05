@@ -17,6 +17,8 @@ from .local_whisper import check_environment as check_local_whisper_environment
 from .knowledge_setup import initialize_obsidian, write_feishu_fields_template
 from .local_whisper import transcribe as transcribe_with_local_whisper
 from .provider_discovery import discover as discover_providers
+from .siliconflow import check_environment as check_siliconflow_environment
+from .siliconflow import transcribe as transcribe_with_siliconflow
 from .security import safe_error_message
 from .workflow import (
     atomic_write_json,
@@ -45,8 +47,13 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--browser-channel", help="Playwright 浏览器通道，如 chrome 或 msedge")
     transcription = setup.add_mutually_exclusive_group()
     transcription.add_argument(
-        "--transcription", choices=("bailian", "cloud", "local", "none"),
-        help="非交互时明确选择：bailian（推荐百炼）、local（本地 Whisper）或 none；cloud 是 bailian 的兼容别名",
+        "--transcription",
+        choices=("siliconflow", "cloud", "bailian", "local", "none"),
+        help=(
+            "非交互时明确选择：siliconflow（推荐，抖音 CDN 主路径）、"
+            "bailian（URL-ASR，对 douyinvod 常失败）、local（本地 Whisper）或 none；"
+            "cloud 现为 siliconflow 别名（旧文档里 cloud=百炼已废弃）"
+        ),
     )
 
     login = commands.add_parser("login", help="打开本地浏览器并保存授权登录状态")
@@ -130,6 +137,15 @@ def _config_summary(config: Config) -> dict:
         stages[stage.name] = status
     readiness = None
     pricing = None
+    if config.transcription.enabled and config.transcription.provider == "siliconflow":
+        readiness = check_siliconflow_environment()
+        pricing = {
+            "currency": "CNY",
+            "model": "FunAudioLLM/SenseVoiceSmall",
+            "provider": "siliconflow",
+            "official_console": "https://cloud.siliconflow.cn/account/ak",
+            "note": "抖音 CDN 推荐主路径：本机带 Referer 下载后上传；计费以硅基流动控制台为准。",
+        }
     if config.transcription.enabled and config.transcription.provider == "bailian":
         readiness = check_bailian_environment()
         pricing = {
@@ -141,7 +157,7 @@ def _config_summary(config: Config) -> dict:
             "estimated_audio_hours_per_10_rmb": 12.63,
             "north_china_2_free_seconds": 36000,
             "official_pricing": "https://help.aliyun.com/zh/model-studio/model-pricing",
-            "note": "官方价格页于 2026-07-30 核验；地域、额度和价格会变化，以控制台账单为准。",
+            "note": "URL-ASR；抖音 douyinvod CDN 服务端常拉不到。价格页以控制台账单为准。",
         }
     if config.transcription.enabled and config.transcription.provider == "local_whisper":
         readiness = check_local_whisper_environment()
@@ -157,10 +173,14 @@ def _config_summary(config: Config) -> dict:
 
 
 def _transcription_next_step(transcription: str) -> str | None:
+    if transcription == "siliconflow":
+        readiness = check_siliconflow_environment()
+        if not readiness["ready"]:
+            return "SiliconFlow 转录尚未就绪：设置 SILICONFLOW_API_KEY（https://cloud.siliconflow.cn/account/ak），然后执行 check-config。"
     if transcription == "bailian":
         readiness = check_bailian_environment()
         if not readiness["ready"]:
-            return "百炼转录尚未就绪：设置 DASHSCOPE_API_KEY，并运行 python -m pip install '.[bailian-asr]'，然后执行 check-config。"
+            return "百炼转录尚未就绪：设置 DASHSCOPE_API_KEY，并运行 python -m pip install '.[bailian-asr]'，然后执行 check-config。注意：抖音 CDN 上百炼 URL-ASR 常失败，优先 SiliconFlow。"
     if transcription == "local":
         readiness = check_local_whisper_environment()
         if not readiness["ready"]:
@@ -169,9 +189,29 @@ def _transcription_next_step(transcription: str) -> str | None:
 
 
 def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) -> dict:
-    transcription = "bailian" if transcription == "cloud" else transcription
-    provider = {"bailian": "bailian", "local": "local_whisper", "none": "none"}[transcription]
-    model = {"bailian": "qwen3-asr-flash", "local": "small", "none": ""}[transcription]
+    # cloud 历史别名曾指向 bailian；2.2+ 改为 siliconflow（抖音真实可用主路径）
+    transcription = "siliconflow" if transcription == "cloud" else transcription
+    provider = {
+        "siliconflow": "siliconflow",
+        "bailian": "bailian",
+        "local": "local_whisper",
+        "none": "none",
+    }[transcription]
+    model = {
+        "siliconflow": "FunAudioLLM/SenseVoiceSmall",
+        "bailian": "qwen3-asr-flash",
+        "local": "small",
+        "none": "",
+    }[transcription]
+    if provider == "bailian":
+        options = {
+            "max_daily_audio_seconds": DEFAULT_MAX_DAILY_AUDIO_SECONDS,
+            "max_daily_items": DEFAULT_MAX_DAILY_ITEMS,
+        }
+    elif provider in {"siliconflow", "local_whisper"}:
+        options = {"max_media_bytes": 512 * 1024 * 1024}
+    else:
+        options = {}
     return {
         "schema_version": 2,
         "mode": "full" if transcription != "none" else "light",
@@ -182,11 +222,7 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
                 "enabled": True,
                 "provider": provider,
                 "model": model,
-                "options": (
-                    {"max_daily_audio_seconds": DEFAULT_MAX_DAILY_AUDIO_SECONDS, "max_daily_items": DEFAULT_MAX_DAILY_ITEMS}
-                    if provider == "bailian"
-                    else {"max_media_bytes": 512 * 1024 * 1024}
-                ),
+                "options": options,
             }
             if transcription != "none"
             else {"enabled": False, "provider": "none"}
@@ -198,24 +234,42 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
 
 def _choose_transcription(args: argparse.Namespace) -> str:
     if args.transcription:
-        return "bailian" if args.transcription == "cloud" else args.transcription
+        return "siliconflow" if args.transcription == "cloud" else args.transcription
     discovery = discover_providers()
-    recommendation = "百炼云端" if discovery["recommended"] == "bailian" else "本地 Whisper"
+    label = {
+        "siliconflow": "SiliconFlow（抖音 CDN 推荐）",
+        "bailian": "百炼 URL-ASR（抖音 CDN 常失败）",
+        "local": "本地 Whisper",
+    }.get(discovery["recommended"], "SiliconFlow（抖音 CDN 推荐）")
     prompt = (
-        f"本机检测（不会读取密钥、下载模型或产生费用）：推荐 {recommendation}。\n"
+        f"本机检测（不会读取密钥、下载模型或产生费用）：推荐 {label}。\n"
         "选择转录方案：\n"
-        "  1. 百炼云端（推荐，需 DASHSCOPE_API_KEY 和 .[bailian-asr]；按音频时长计费）\n"
-        "  2. 本地 Whisper（无 API 费用；首次约下载 500 MB 模型，需要 ffmpeg、CPU 和临时磁盘）\n"
-        "  3. 暂不转录（只保存标题、描述与链接）\n"
-        "选择 [1/2/3，默认 1]: "
+        "  1. SiliconFlow 云端（推荐，需 SILICONFLOW_API_KEY；本机 Referer 下载后上传 SenseVoice）\n"
+        "  2. 百炼 URL-ASR（可选，需 DASHSCOPE_API_KEY；抖音 douyinvod 服务端常拉不到）\n"
+        "  3. 本地 Whisper（无 API 费用；首次约下载 500 MB 模型，需要 ffmpeg）\n"
+        "  4. 暂不转录（只保存标题、描述与链接）\n"
+        "选择 [1/2/3/4，默认 1]: "
     )
     try:
         answer = input(prompt).strip().lower()
     except EOFError as exc:
-        raise ValueError("非交互安装请明确使用 setup --transcription bailian|local|none") from exc
-    choices = {"": "bailian", "1": "bailian", "bailian": "bailian", "cloud": "bailian", "2": "local", "local": "local", "3": "none", "none": "none"}
+        raise ValueError(
+            "非交互安装请明确使用 setup --transcription siliconflow|bailian|local|none"
+        ) from exc
+    choices = {
+        "": "siliconflow",
+        "1": "siliconflow",
+        "siliconflow": "siliconflow",
+        "cloud": "siliconflow",
+        "2": "bailian",
+        "bailian": "bailian",
+        "3": "local",
+        "local": "local",
+        "4": "none",
+        "none": "none",
+    }
     if answer not in choices:
-        raise ValueError("转录方案只能选择 1、2、3、bailian、local 或 none")
+        raise ValueError("转录方案只能选择 1/2/3/4 或 siliconflow|bailian|local|none")
     return choices[answer]
 
 
@@ -367,7 +421,16 @@ def _finish_bailian_budget(config: Config, reservation_id: int, success: bool) -
 
 def _apply_configured_stages(raw_items: list[dict], config: Config) -> list[dict]:
     for stage in config.enrichment_stages():
-        if stage.name == "transcription" and stage.provider == "bailian":
+        if stage.name == "transcription" and stage.provider == "siliconflow":
+            readiness = check_siliconflow_environment()
+            if not readiness["ready"]:
+                raise ValueError(
+                    f"SiliconFlow transcription is not ready: {', '.join(readiness['missing'])}"
+                )
+            raw_items = _apply_enricher(
+                raw_items, "", stage.context(config.mode), transcribe_with_siliconflow
+            )
+        elif stage.name == "transcription" and stage.provider == "bailian":
             readiness = check_bailian_environment()
             if not readiness["ready"]:
                 raise ValueError(f"Bailian transcription is not ready: {', '.join(readiness['missing'])}")

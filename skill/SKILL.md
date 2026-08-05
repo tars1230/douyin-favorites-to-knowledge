@@ -1,6 +1,6 @@
 ---
 name: douyin-favorites-to-knowledge
-description: 将用户已授权账号中的抖音视频收藏或用户明确指定的喜欢列表配置并同步到本地 Markdown 或 Obsidian 知识库；默认收藏，只有用户明确说喜欢/点赞才切换来源。首次明确选择推荐的百炼转录、本地 Whisper 或不转录。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
+description: 将用户已授权账号中的抖音视频收藏或用户明确指定的喜欢列表配置并同步到本地 Markdown 或 Obsidian 知识库；默认收藏，只有用户明确说喜欢/点赞才切换来源。首次明确选择推荐的 SiliconFlow转录、本地 Whisper 或不转录。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
 ---
 
 # 抖音视频收藏转本地知识库
@@ -33,7 +33,7 @@ Gitee 不可用时再使用源码仓库 `https://github.com/tars1230/douyin-favo
 douyin-favorites-knowledge setup
 ```
 
-让用户选择 Markdown 或 Obsidian 知识库目录，再让用户选择转录方案。推荐百炼云端；本地 Whisper 只有用户愿意下载模型、承担本机资源时才选；`none` 只保存描述与链接。不要要求用户复制 Cookie。默认来源是收藏；仅当用户明确说“喜欢”或“点赞”时，向 `login`/`sync` 传 `--source like`。
+让用户选择 Markdown 或 Obsidian 知识库目录，再让用户选择转录方案。推荐 SiliconFlow云端；本地 Whisper 只有用户愿意下载模型、承担本机资源时才选；`none` 只保存描述与链接。不要要求用户复制 Cookie。默认来源是收藏；仅当用户明确说“喜欢”或“点赞”时，向 `login`/`sync` 传 `--source like`。
 
 用户明确选择 Obsidian 时，在已有 setup 后执行：
 
@@ -83,7 +83,7 @@ douyin-favorites-knowledge daily --source collection --no-login-prompt
 
 ## 转录
 
-用户未指定时，建议百炼云端转录，但要先告知它会按音频时长计费，且让用户在 `setup` 中明确选择。默认直连 `qwen3-asr-flash`，只需要 `DASHSCOPE_API_KEY` 和 `python -m pip install '.[bailian-asr]'`。云端只提交已授权采集到的临时播放地址，项目不落地下载视频。密钥不能写入 config、笔记或日志。
+用户未指定时，建议SiliconFlow 云端转录，但要先告知它会按音频时长计费，且让用户在 `setup` 中明确选择。默认直连 `qwen3-asr-flash`，只需要 `DASHSCOPE_API_KEY` 和 `python -m pip install '.[bailian-asr]'`。云端只提交已授权采集到的临时播放地址，项目不落地下载视频。密钥不能写入 config、笔记或日志。
 
 截至 2026-07-30，官方价格页的华北 2 `qwen3-asr-flash` 为 0.00022 元/秒，约 0.0132 元/分钟；10 元约转录 12.6 小时音频。若用户每月转录 10 分钟，约可使用 6 年多；每月 1 小时则约够 1 年。页面列 36,000 秒免费额度（有效期与地域以官方页为准）。默认每日最多 100 条、3,600 秒；超限项不发给百炼、不入库，次日自动重试。价格、额度会变，实际扣费只以用户百炼控制台账单为准。笔记必须保留 `transcript_source` 与 `transcript_status`；未转录时必须说明原始 Description 不是逐字稿。
 
@@ -128,3 +128,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 真实采集依赖有效的授权登录和抖音当前页面结构。fixture 通过只证明事务与编排契约。
+
+
+## ASR（2.2）
+
+抖音默认 **SiliconFlow SenseVoice**（本机 Referer 下载上传）。百炼 URL-ASR 对 douyinvod 常失败，仅可选。密钥：`SILICONFLOW_API_KEY`。
