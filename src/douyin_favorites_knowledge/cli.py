@@ -184,11 +184,15 @@ def _transcription_next_step(transcription: str) -> str | None:
     if transcription == "siliconflow":
         readiness = check_siliconflow_environment()
         if not readiness["ready"]:
-            return "SiliconFlow 转录尚未就绪：设置 SILICONFLOW_API_KEY（https://cloud.siliconflow.cn/account/ak），然后执行 check-config。"
+            return (
+                "SiliconFlow 转录尚未就绪：① 打开推荐注册页 https://cloud.siliconflow.cn/i/1srulim9 "
+                "② 控制台创建 Key https://cloud.siliconflow.cn/account/ak "
+                "③ export SILICONFLOW_API_KEY='…'（或写入 ~/.hermes/.env）后执行 check-config。"
+            )
     if transcription == "bailian":
         readiness = check_bailian_environment()
         if not readiness["ready"]:
-            return "百炼转录尚未就绪：设置 DASHSCOPE_API_KEY，并运行 python -m pip install '.[bailian-asr]'，然后执行 check-config。注意：抖音 CDN 上百炼 URL-ASR 常失败，优先 SiliconFlow。"
+            return "百炼转录尚未就绪：设置 DASHSCOPE_API_KEY，并运行 python -m pip install '.[bailian-asr]'，然后执行 check-config。注意：抖音 CDN 上百炼 URL-ASR 常失败，优先 SiliconFlow（注册：https://cloud.siliconflow.cn/i/1srulim9）。"
     if transcription == "local":
         readiness = check_local_whisper_environment()
         if not readiness["ready"]:
@@ -313,13 +317,34 @@ def _setup(args: argparse.Namespace) -> int:
             channel=args.browser_channel,
         )["status"]
     next_step = _transcription_next_step(transcription)
-    _print({
+    payload = {
         "status": "ready",
         "login": login_status,
         "transcription": transcription,
         "provider_discovery": discover_providers(),
         **({"next_step": next_step} if next_step else {}),
-    })
+    }
+    if transcription == "siliconflow" and next_step:
+        payload["siliconflow_referral_url"] = "https://cloud.siliconflow.cn/i/1srulim9"
+        payload["siliconflow_console_url"] = "https://cloud.siliconflow.cn/account/ak"
+        if sys.stdin.isatty():
+            print("—— SiliconFlow 配置（抖音推荐）——", file=sys.stderr)
+            print("  ① 推荐注册/登录：https://cloud.siliconflow.cn/i/1srulim9", file=sys.stderr)
+            print("  ② 控制台建 Key：https://cloud.siliconflow.cn/account/ak", file=sys.stderr)
+            print("  ③ export SILICONFLOW_API_KEY='…' 或写入 ~/.hermes/.env 后重启", file=sys.stderr)
+            try:
+                ans = input("是否打开推荐注册页？[Y/n] ").strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans not in {"n", "no"}:
+                try:
+                    import webbrowser
+
+                    webbrowser.open("https://cloud.siliconflow.cn/i/1srulim9")
+                    print("已尝试打开浏览器。", file=sys.stderr)
+                except Exception:
+                    print("无法自动打开，请手动访问推荐注册页。", file=sys.stderr)
+    _print(payload)
     return 0
 
 

@@ -86,8 +86,13 @@ douyin-favorites-knowledge daily --source collection --no-login-prompt
 用户未指定时，建议 **SiliconFlow** 云端转录（`FunAudioLLM/SenseVoiceSmall`），并让用户在 `setup` 中明确选择。
 需要 `SILICONFLOW_API_KEY` 与可选 `ffmpeg`。
 
-- **注册推荐链接**：[https://cloud.siliconflow.cn/i/1srulim9](https://cloud.siliconflow.cn/i/1srulim9)
-- Key 控制台：[https://cloud.siliconflow.cn/account/ak](https://cloud.siliconflow.cn/account/ak)
+**新用户按序拿 Key（setup 缺 Key 时会打印同样步骤，交互可打开浏览器）：**
+
+1. 推荐注册/登录：https://cloud.siliconflow.cn/i/1srulim9  
+2. 控制台创建 Key：https://cloud.siliconflow.cn/account/ak  
+3. `export SILICONFLOW_API_KEY='…'` 或写入 `~/.hermes/.env`，**重启 Agent**  
+4. `douyin-favorites-knowledge check-config`
+
 抖音 CDN：本机用浏览器式 `Referer: https://www.douyin.com/` 临时下载已授权 `play_url` → 上传 SenseVoice → **立即删除临时文件**；不要把 douyinvod URL 丢给百炼服务端。
 密钥不能写入 config、笔记或日志。
 
