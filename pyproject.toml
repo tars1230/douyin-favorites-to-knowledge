@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "douyin-favorites-to-knowledge"
-version = "2.2.4"
+version = "2.2.5"
 description = "Authorized Douyin favorites collection with optional transcription and analysis adapters"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.5] - 2026-08-05
+
+### Changed
+- setup / next_step 缺 SiliconFlow Key 时强制给出推荐注册页 + 控制台 + export 三步；交互终端可打开 `https://cloud.siliconflow.cn/i/1srulim9`。
+
 ## [2.2.4] - 2026-08-05
 
 ### Changed
