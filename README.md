@@ -219,6 +219,8 @@ douyin-favorites-knowledge daily --source like --no-login-prompt
 
 ```bash
 export SILICONFLOW_API_KEY="你的硅基流动 Key"   # https://cloud.siliconflow.cn/account/ak
+
+- **注册推荐链接**：[https://cloud.siliconflow.cn/i/1srulim9](https://cloud.siliconflow.cn/i/1srulim9)
 douyin-favorites-knowledge setup --transcription siliconflow
 douyin-favorites-knowledge check-config
 ```
