@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0 — 2026-08-05
+
+### Fixed / Breaking (behavior)
+
+- **抖音默认转录改为 SiliconFlow SenseVoice**（本机带 `Referer` 下载后上传），不再默认推荐百炼 URL-ASR。
+- 百炼 `qwen3-asr-flash` 仍可用，但对 `*.douyinvod.com` 服务端拉流常失败；文档与 setup 标明为可选。
+- 本地 Whisper 下载补上 Douyin `Referer/Origin`，修复 CDN 403。
+- `setup --transcription cloud` 现映射 **siliconflow**（旧行为 cloud=bailian 已废弃）。
+- provider discovery / check-config / 非交互 setup 同步。
+
 ## 2.1.0
 
 - 新增 `configure-obsidian`：选择用户自己的 Vault 与子目录后，创建收藏/喜欢模板、日报索引、飞书字段模板并完成临时写入检查。

@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-不用复制 Cookie，也不用理解内部处理步骤。首次 `setup` 会明确让你选择：推荐的百炼云端转录、本地 Whisper，或暂不转录。
+不用复制 Cookie，也不用理解内部处理步骤。首次 `setup` 会明确让你选择：**推荐 SiliconFlow 云端转录**（抖音 CDN 真实可用）、可选百炼 URL-ASR、本地 Whisper，或暂不转录。
 
 ## 最短使用路径
 
@@ -21,7 +21,7 @@ clawhub install douyin-favorites-to-knowledge
 然后告诉 Agent：
 
 ```text
-把我的抖音收藏同步到本地 Markdown 或 Obsidian 知识库。使用推荐的百炼云端转录，不要让我复制 Cookie。
+把我的抖音收藏同步到本地 Markdown 或 Obsidian 知识库。使用推荐的 SiliconFlow 云端转录（SILICONFLOW_API_KEY），不要让我复制 Cookie。
 ```
 
 Agent 会在缺少程序时优先从 Gitee 安装完整程序。你只需要确认知识库目录，再在抖音官方页面正常登录。
@@ -74,6 +74,18 @@ Obsidian 初始化会做一次临时写入检查，并提供“收藏/喜欢”�
 飞书 webhook 配置后，通知失败只在同步结果中标为 `not_sent`，本地笔记和防重账本仍会正常写入。多维表模式当前会生成推荐字段（标题、来源类型、作者、原视频、标签、转录状态、沉淀时间、Obsidian 笔记）与授权提示；用户仍须在飞书中登录、创建或选择表格、授权应用并共享表格，Skill 不保存 App Secret 或 webhook。
 
 [GitHub](https://github.com/tars1230/douyin-favorites-to-knowledge) 保存源码、版本和问题反馈；[Gitee](https://gitee.com/tars123/douyin-favorites-to-knowledge) 提供国内下载，并自动同步 `main` 与正式标签。
+
+## 转录说明（2.2 重要变更）
+
+| 方案 | 适用 | 密钥 |
+|------|------|------|
+| **SiliconFlow SenseVoice（默认推荐）** | 抖音 CDN 口播 | `SILICONFLOW_API_KEY` |
+| 百炼 qwen3-asr-flash（可选） | 可公网直链的音频；**抖音 douyinvod 服务端常拉不到** | `DASHSCOPE_API_KEY` |
+| 本地 Whisper | 无云费用、本机算力 | 无 API Key |
+
+抖音播放地址带防盗链：本机下载必须带 `Referer: https://www.douyin.com/`。SiliconFlow / 本地 Whisper 路径已处理；百炼 URL 模式把 URL 交给阿里云服务器去拉，对抖音 CDN **结构性失败**，因此不再作为默认推荐。
+
+`setup --transcription cloud` 在 2.2+ 映射到 **siliconflow**（不再等于 bailian）。
 
 ## 安装说明
 
@@ -192,17 +204,28 @@ douyin-favorites-knowledge daily --source like --no-login-prompt
 
 ## 视频转录与费用
 
-首次 `setup` 必须明确选择一种方案。它会先进行不读取密钥、不下载模型、不产生费用的本机能力检测，再展示建议；非交互环境使用 `--transcription bailian|local|none`。检测到百炼 Key 也不会自动开启付费转录。
+首次 `setup` 必须明确选择一种方案。它会先进行不读取密钥、不下载模型、不产生费用的本机能力检测，再展示建议；非交互环境使用 `--transcription siliconflow|bailian|local|none`（`cloud` = siliconflow）。检测到 Key 也不会自动开启付费转录。
 
 | 方案 | 适合谁 | 首次要求 | 费用 |
 |---|---|---|---|
-| `bailian`（推荐，`cloud` 为兼容别名） | 想少折腾、稳定获得全文 | 百炼 Key 和 `.[bailian-asr]` | 按音频秒数计费 |
-| `local` | 不希望使用云端 API、能接受本机等待 | `ffmpeg`、`faster-whisper`、约 500 MB 首次模型下载和至少 1.5 GB 临时空间 | 无 API 费用，消耗本机计算和电力 |
+| **`siliconflow`（推荐，`cloud` 别名）** | 抖音 CDN 口播全文 | `SILICONFLOW_API_KEY`；建议有 `ffmpeg` | 按硅基流动账单 |
+| `bailian`（可选） | 可公网直链的音频；**抖音 douyinvod 常失败** | `DASHSCOPE_API_KEY` + `.[bailian-asr]` | 按音频秒数计费 |
+| `local` | 不希望使用云端 API | `ffmpeg`、`faster-whisper`、约 500 MB 模型 | 无 API 费用 |
 | `none` | 只需要收藏描述与链接 | 无 | 无 |
 
-### 百炼云端（推荐）
+### SiliconFlow 云端（推荐）
 
-默认方案直连阿里云百炼的 `qwen3-asr-flash`，只读取环境变量 `DASHSCOPE_API_KEY`。Key 不写入配置、笔记或日志；`check-config` 只检查 Key 是否存在和 `dashscope` 是否已安装，缺任一项都不会开始同步。云端转录把已授权采集到的临时播放地址交给百炼，项目本身不下载视频到本地。
+默认方案：本机用浏览器式 `Referer: https://www.douyin.com/` 临时下载已授权 `play_url`，可选抽音频后上传 SiliconFlow `FunAudioLLM/SenseVoiceSmall`，结束后删临时文件。Key 只读环境变量 `SILICONFLOW_API_KEY`，不写配置/笔记/日志。
+
+```bash
+export SILICONFLOW_API_KEY="你的硅基流动 Key"   # https://cloud.siliconflow.cn/account/ak
+douyin-favorites-knowledge setup --transcription siliconflow
+douyin-favorites-knowledge check-config
+```
+
+### 百炼 URL-ASR（可选，非抖音默认）
+
+把临时播放地址直接交给阿里云百炼 `qwen3-asr-flash`（服务端拉 URL，项目不下载）。**对抖音 `*.douyinvod.com` 服务端常拉不到**，因此不再作为公开默认推荐；仅当你确认媒体 URL 可被阿里云公网访问时使用。
 
 ```bash
 export DASHSCOPE_API_KEY="你的百炼 Key"
@@ -211,9 +234,7 @@ douyin-favorites-knowledge setup --transcription bailian
 douyin-favorites-knowledge check-config
 ```
 
-截至 **2026-07-30**，阿里云百炼[官方价格页](https://help.aliyun.com/zh/model-studio/model-pricing)列出的华北 2（北京）`qwen3-asr-flash` 为 **0.00022 元/秒**，输出不计费：约 **0.0132 元/分钟**、**0.132 元/10 分钟**、**0.792 元/小时**。成本门槛很低：**10 元约可转录 12.6 小时音频（约 758 分钟）**；若每月收藏并转录 10 分钟，约可使用 **6 年多**，即使每月 1 小时也约够 **1 年**。实际时长取决于每条视频长度和使用频率。该地域页面同时列出 **36,000 秒（10 小时）**免费额度，说明有效期为自开通百炼、模型发布或申请通过之日起（取较晚者）90 天；其他地域的额度规则不同。
-
-价格、地域、免费额度和活动会变动，`check-config` 只提供上述估算。**实际扣费以百炼控制台账单为准**。所有百炼配置默认每天最多转录 100 条、合计 3,600 秒（约 1 小时）；超过上限的条目不发给百炼、不写入账本，次日自动重试。可在配置的 `transcription.options` 调整 `max_daily_items` 与 `max_daily_audio_seconds`。本机没有可公开的百炼账单导出，因此项目不宣称“每条视频实际花了多少钱”。
+截至 **2026-07-30**，阿里云百炼[官方价格页](https://help.aliyun.com/zh/model-studio/model-pricing)华北 2 `qwen3-asr-flash` 约 **0.00022 元/秒**。价格以控制台账单为准。百炼配置默认每天最多 100 条 / 3,600 秒。
 
 ### 本地 Whisper
 

@@ -66,7 +66,19 @@ def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
             root = Path(temp_dir)
             media_path = root / "source.mp4"
             audio_path = root / "audio.wav"
-            request = urllib.request.Request(play_url, headers={"User-Agent": "Mozilla/5.0"})
+            request = urllib.request.Request(
+                play_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Referer": "https://www.douyin.com/",
+                    "Origin": "https://www.douyin.com",
+                    "Accept": "*/*",
+                },
+            )
             with urllib.request.urlopen(request, timeout=180) as response, media_path.open("wb") as output:
                 declared = response.headers.get("Content-Length")
                 if declared:

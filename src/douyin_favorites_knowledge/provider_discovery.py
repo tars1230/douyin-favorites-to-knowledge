@@ -8,6 +8,7 @@ from typing import Any
 
 from .bailian import check_environment as check_bailian
 from .local_whisper import check_environment as check_local_whisper
+from .siliconflow import check_environment as check_siliconflow
 
 
 def _minimax_status() -> dict[str, Any]:
@@ -26,11 +27,32 @@ def _minimax_status() -> dict[str, Any]:
 
 def discover() -> dict[str, Any]:
     """Return credential-free, non-billing readiness information for setup and diagnostics."""
+    silicon = check_siliconflow()
     bailian = check_bailian()
     local = check_local_whisper()
+    if silicon["ready"]:
+        recommended = "siliconflow"
+    elif bailian["ready"]:
+        recommended = "bailian"
+    elif local["ready"]:
+        recommended = "local"
+    else:
+        recommended = "siliconflow"
     return {
-        "bailian": {"state": "ready" if bailian["ready"] else "action_required", **({"missing": bailian["missing"]} if not bailian["ready"] else {})},
-        "local_whisper": {"state": "ready" if local["ready"] else "action_required", **({"missing": local["missing"]} if not local["ready"] else {})},
+        "siliconflow": {
+            "state": "ready" if silicon["ready"] else "action_required",
+            **({"missing": silicon["missing"]} if not silicon["ready"] else {}),
+            "note": "Douyin CDN 推荐主路径：本机 Referer 下载后上传 SenseVoice",
+        },
+        "bailian": {
+            "state": "ready" if bailian["ready"] else "action_required",
+            **({"missing": bailian["missing"]} if not bailian["ready"] else {}),
+            "note": "URL-ASR；抖音 douyinvod CDN 服务端常拉不到，不作为默认推荐",
+        },
+        "local_whisper": {
+            "state": "ready" if local["ready"] else "action_required",
+            **({"missing": local["missing"]} if not local["ready"] else {}),
+        },
         "minimax": _minimax_status(),
-        "recommended": "bailian" if bailian["ready"] else ("local" if local["ready"] else "bailian"),
+        "recommended": recommended,
     }
