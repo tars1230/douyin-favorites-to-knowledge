@@ -57,3 +57,10 @@ class ProviderDiscoveryTests(unittest.TestCase):
             result = discover()
         self.assertEqual(result["recommended"], "local")
         self.assertEqual(result["minimax"]["state"], "unavailable")
+
+
+    def test_siliconflow_is_default_recommendation(self) -> None:
+        from douyin_favorites_knowledge.provider_discovery import discover
+        d = discover()
+        self.assertEqual(d["recommended"], "siliconflow")
+        self.assertIn("SenseVoice", d["siliconflow"]["note"])
