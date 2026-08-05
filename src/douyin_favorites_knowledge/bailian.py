@@ -34,7 +34,11 @@ def _response_text(response: Any) -> str:
 
 
 def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
-    """Send an authorized temporary play URL to DashScope ASR; no media is written locally."""
+    """Send play URL to DashScope URL-ASR (no local download).
+
+    Warning: Douyin CDN (*.douyinvod.com) is often unreachable from Bailian servers.
+    Prefer siliconflow.transcribe for Douyin media.
+    """
     readiness = check_environment()
     if not readiness["ready"]:
         raise ValueError(f"Bailian transcription is not ready: {', '.join(readiness['missing'])}")
