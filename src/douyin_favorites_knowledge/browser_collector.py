@@ -181,6 +181,14 @@ class BrowserCollector:
                         description: item.desc || '',
                         author: item.author ? item.author.nickname || '' : '',
                         play_url: item.video && item.video.play_addr && item.video.play_addr.url_list ? item.video.play_addr.url_list[0] || '' : '',
+                        // Prefer original-sound style audio only. Commercial BGM music.play_url is often not speech.
+                        audio_url: (function () {
+                          const music = item.music || {};
+                          const original = Boolean(music.is_original_sound || music.is_original || music.owner_handle || music.owner_nickname);
+                          const list = (music.play_url && music.play_url.url_list) || (item.video && item.video.audio && item.video.audio.url_list) || [];
+                          if (!original && !(item.video && item.video.audio && item.video.audio.url_list)) return '';
+                          return list[0] || '';
+                        })(),
                         duration_seconds: Number(item.video && item.video.duration || 0) / 1000,
                     })),
                 };

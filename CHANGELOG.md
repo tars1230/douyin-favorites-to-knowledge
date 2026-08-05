@@ -11,6 +11,13 @@
 
 # Changelog
 
+## [2.2.3] - 2026-08-05
+
+### Changed
+- ASR：优先 `audio_url`，失败回退 `play_url`；`DOUYIN_ASR_AUDIO_BITRATE` / `DOUYIN_ASR_SAMPLE_RATE` 可配。
+- 采集：仅原创音/视频音轨写入 `audio_url`，避免 BGM 误转写。
+
+
 ## 2.2.0 — 2026-08-05
 
 ### Fixed / Breaking (behavior)
