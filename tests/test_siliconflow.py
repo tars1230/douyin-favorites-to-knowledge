@@ -86,8 +86,8 @@ class LocalWhisperRefererTests(unittest.TestCase):
         self.assertIn("douyin.com", headers["referer"])
 
 
-class SiliconFlowAudioFirstTests(unittest.TestCase):
-    def test_prefers_audio_url_before_play_url(self):
+class SiliconFlowVideoPathTests(unittest.TestCase):
+    def test_uses_play_url_and_ignores_audio_url(self):
         order = []
 
         def fake_download(url, destination, max_bytes):
@@ -96,8 +96,7 @@ class SiliconFlowAudioFirstTests(unittest.TestCase):
             return None
 
         def fake_upload(path, api_key, model, endpoint):
-            # succeed only for audio candidate path content after extract skip
-            return "来自音频轨"
+            return "来自视频轨"
 
         with patch.dict(os.environ, {"SILICONFLOW_API_KEY": "sf-key", "DOUYIN_ASR_AUDIO_BITRATE": "48k"}, clear=True), patch(
             "douyin_favorites_knowledge.siliconflow._download_media", side_effect=fake_download
@@ -114,12 +113,13 @@ class SiliconFlowAudioFirstTests(unittest.TestCase):
                 {},
             )
         self.assertEqual(result["transcript_status"], "success")
-        self.assertEqual(order[0], "https://cdn.example/a.m4a")
-        self.assertEqual(result.get("media_kind_used"), "audio")
+        self.assertEqual(order, ["https://v3-web.douyinvod.com/big.mp4"])
+        self.assertEqual(result.get("media_kind_used"), "play")
+        self.assertEqual(result["transcript"], "来自视频轨")
 
-    def test_falls_back_to_play_url_when_audio_fails(self):
+    def test_falls_back_to_video_url_when_play_fails(self):
         def fake_download(url, destination, max_bytes):
-            if url.endswith(".m4a"):
+            if "play" in url or url.endswith("big.mp4"):
                 return "failed"
             destination.write_bytes(b"video-bytes")
             return None
@@ -135,12 +135,13 @@ class SiliconFlowAudioFirstTests(unittest.TestCase):
                 {
                     "audio_url": "https://cdn.example/a.m4a",
                     "play_url": "https://v3-web.douyinvod.com/big.mp4",
+                    "video_url": "https://cdn.example/alt.mp4",
                 },
                 {},
             )
         self.assertEqual(result["transcript_status"], "success")
         self.assertEqual(result["transcript"], "视频回退成功")
-        self.assertEqual(result.get("media_kind_used"), "play")
+        self.assertEqual(result.get("media_kind_used"), "video")
 
     def test_bitrate_env_passed_to_ffmpeg(self):
         seen = {}

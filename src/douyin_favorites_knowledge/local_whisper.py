@@ -59,7 +59,8 @@ def _sample_rate() -> str:
 def _candidate_urls(item: dict[str, Any]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for key in ("audio_url", "play_url", "video_url"):
+    # Video/play only — skip audio_url (often commercial BGM, not speech).
+    for key in ("play_url", "video_url"):
         url = str(item.get(key) or "").strip()
         if url and url not in seen:
             seen.add(url)
@@ -113,7 +114,7 @@ def _download(url: str, destination: Path, max_media_bytes: int) -> str | None:
 
 
 def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
-    """Download authorized media (audio preferred), extract audio, transcribe locally."""
+    """Download authorized play/video media, extract audio, transcribe locally."""
     readiness = check_environment()
     if not readiness["ready"]:
         raise ValueError(f"local Whisper transcription is not ready: {', '.join(readiness['missing'])}")

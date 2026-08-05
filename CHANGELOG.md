@@ -1,3 +1,16 @@
+# Changelog
+
+## [2.2.4] - 2026-08-05
+
+### Changed
+- ASR 简化为单一稳定路径：只下 `play_url`/`video_url` → ffmpeg 抽音 → SenseVoice；去掉 `audio_url` 优先分支。
+
+## [2.2.3] - 2026-08-05
+
+### Changed
+- ASR：优先 `audio_url`，失败回退 `play_url`；`DOUYIN_ASR_AUDIO_BITRATE` / `DOUYIN_ASR_SAMPLE_RATE` 可配。
+- 采集：仅原创音/视频音轨写入 `audio_url`，避免 BGM 误转写。
+
 ## [2.2.2] - 2026-08-05
 
 ### Changed
@@ -8,14 +21,6 @@
 ### Changed
 - 费用说明改为 SiliconFlow 默认：截至 2026-08-05 官方价格页 `FunAudioLLM/SenseVoiceSmall` 标注**免费**（会变，以 https://siliconflow.cn/pricing 与账单为准）。
 - 百炼 `0.00022 元/秒` 估算降为可选方案旁注，不再当默认报价。
-
-# Changelog
-
-## [2.2.3] - 2026-08-05
-
-### Changed
-- ASR：优先 `audio_url`，失败回退 `play_url`；`DOUYIN_ASR_AUDIO_BITRATE` / `DOUYIN_ASR_SAMPLE_RATE` 可配。
-- 采集：仅原创音/视频音轨写入 `audio_url`，避免 BGM 误转写。
 
 
 ## 2.2.0 — 2026-08-05
