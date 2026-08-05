@@ -3,13 +3,15 @@
 
 Douyin ``*.douyinvod.com`` play URLs require browser-like Referer headers and
 cannot be fetched by Bailian server-side URL-ASR. This provider downloads with
-Referer, optionally extracts audio via ffmpeg, and uploads to SiliconFlow.
+Referer, extracts audio via ffmpeg, and uploads to SiliconFlow.
 
-Media selection:
-1. Prefer ``audio_url`` when present (may be smaller).
-2. Fall back to ``play_url`` / video if audio missing, download fails, or ASR empty.
-Note: Douyin ``music.play_url`` is often BGM, not speech — collectors should only
-populate audio_url when it is likely original/speech audio; we still fall back.
+Stable path (deliberately simple):
+1. Download ``play_url`` / ``video_url`` (video stream).
+2. ``ffmpeg -vn`` extract mono 16 kHz mp3.
+3. Upload to SiliconFlow SenseVoice.
+
+Do **not** prefer ``audio_url`` / ``music.play_url`` — that is often commercial
+BGM, not speech, and adds a flaky branch. Keep one media path.
 """
 from __future__ import annotations
 
@@ -74,11 +76,10 @@ def _looks_like_audio_url(url: str) -> bool:
 
 
 def _candidate_urls(item: dict[str, Any]) -> list[tuple[str, str]]:
-    """Ordered (kind, url) candidates: audio first, then video/play."""
+    """Ordered (kind, url) candidates: video/play only (no audio_url branch)."""
     seen: set[str] = set()
     out: list[tuple[str, str]] = []
     for kind, key in (
-        ("audio", "audio_url"),
         ("play", "play_url"),
         ("video", "video_url"),
     ):
@@ -206,7 +207,7 @@ def _upload_transcribe(path: Path, api_key: str, model: str, endpoint: str) -> s
 
 
 def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
-    """Download media with Referer (audio preferred) and transcribe via SiliconFlow."""
+    """Download video/play with Referer, extract audio, transcribe via SiliconFlow."""
     readiness = check_environment()
     if not readiness["ready"]:
         raise ValueError(f"SiliconFlow transcription is not ready: {', '.join(readiness['missing'])}")

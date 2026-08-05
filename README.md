@@ -397,9 +397,9 @@ python -m pip uninstall douyin-favorites-to-knowledge
 
 [MIT](LICENSE)
 
-### ASR 媒体与码率（2.2.3+）
-- 下载优先 `audio_url`（采集端仅在原创音/视频音轨时填充），失败回退 `play_url` 视频。
-- **注意**：抖音 `music.play_url` 经常是 BGM 不是口播，不能无脑当音频源。
+### ASR 媒体与码率（2.2.4+）
+- **单一路径**：下载 `play_url`/`video_url` → `ffmpeg -vn` 抽音 → 上传 SenseVoice。
+- **不再优先** `audio_url`（抖音 `music.play_url` 经常是 BGM 不是口播）。
 - 环境变量：`DOUYIN_ASR_AUDIO_BITRATE`（默认 `64k`）、`DOUYIN_ASR_SAMPLE_RATE`（默认 `16000`）。
-- 网络下载阶段仍可能是视频体积；上传给 SenseVoice 的是抽好的小音频。
+- 网络下载阶段可能是视频体积；上传给 SenseVoice 的是抽好的小音频。
 
