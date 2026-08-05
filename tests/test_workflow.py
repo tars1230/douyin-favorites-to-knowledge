@@ -458,6 +458,40 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(payload["cloud_transcription_pricing"]["estimated_audio_hours_per_10_rmb"], 12.63)
         self.assertNotIn(str(self.root), output.getvalue())
 
+
+    def test_siliconflow_check_config_shows_free_list_price(self):
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "mode": "full",
+                    "knowledge_dir": "knowledge",
+                    "ledger_path": "state/ledger.sqlite3",
+                    "transcription": {
+                        "enabled": True,
+                        "provider": "siliconflow",
+                        "model": "FunAudioLLM/SenseVoiceSmall",
+                    },
+                    "analysis": {"enabled": False, "provider": "none"},
+                    "notification": {"enabled": False, "provider": "none"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.check_siliconflow_environment",
+            return_value={"ready": True},
+        ), redirect_stdout(output):
+            returncode = main(["--config", str(self.config), "check-config"])
+        self.assertEqual(returncode, 0)
+        payload = json.loads(output.getvalue())
+        pricing = payload["cloud_transcription_pricing"]
+        self.assertEqual(pricing["provider"], "siliconflow")
+        self.assertEqual(pricing["list_price_label"], "免费")
+        self.assertIn("siliconflow.cn/pricing", pricing["official_pricing"])
+
+
     def test_legacy_collection_ledger_is_not_reimported(self):
         self.ledger.parent.mkdir(parents=True)
         with sqlite3.connect(self.ledger) as connection:

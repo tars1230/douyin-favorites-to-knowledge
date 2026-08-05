@@ -1,3 +1,9 @@
+## [2.2.1] - 2026-08-05
+
+### Changed
+- 费用说明改为 SiliconFlow 默认：截至 2026-08-05 官方价格页 `FunAudioLLM/SenseVoiceSmall` 标注**免费**（会变，以 https://siliconflow.cn/pricing 与账单为准）。
+- 百炼 `0.00022 元/秒` 估算降为可选方案旁注，不再当默认报价。
+
 # Changelog
 
 ## 2.2.0 — 2026-08-05

@@ -208,7 +208,7 @@ douyin-favorites-knowledge daily --source like --no-login-prompt
 
 | 方案 | 适合谁 | 首次要求 | 费用 |
 |---|---|---|---|
-| **`siliconflow`（推荐，`cloud` 别名）** | 抖音 CDN 口播全文 | `SILICONFLOW_API_KEY`；建议有 `ffmpeg` | 按硅基流动账单 |
+| **`siliconflow`（推荐，`cloud` 别名）** | 抖音 CDN 口播全文 | `SILICONFLOW_API_KEY`；建议有 `ffmpeg` | 截至 2026-08-05 官方价 `SenseVoiceSmall`=**免费**；以 [价格页](https://siliconflow.cn/pricing)/账单为准 |
 | `bailian`（可选） | 可公网直链的音频；**抖音 douyinvod 常失败** | `DASHSCOPE_API_KEY` + `.[bailian-asr]` | 按音频秒数计费 |
 | `local` | 不希望使用云端 API | `ffmpeg`、`faster-whisper`、约 500 MB 模型 | 无 API 费用 |
 | `none` | 只需要收藏描述与链接 | 无 | 无 |
@@ -234,7 +234,17 @@ douyin-favorites-knowledge setup --transcription bailian
 douyin-favorites-knowledge check-config
 ```
 
-截至 **2026-07-30**，阿里云百炼[官方价格页](https://help.aliyun.com/zh/model-studio/model-pricing)华北 2 `qwen3-asr-flash` 约 **0.00022 元/秒**。价格以控制台账单为准。百炼配置默认每天最多 100 条 / 3,600 秒。
+### SiliconFlow 费用（默认推荐）
+
+截至 **2026-08-05**，硅基流动[官方价格页](https://siliconflow.cn/pricing)语音模型 `FunAudioLLM/SenseVoiceSmall` 标注为 **免费**（同页 `TeleSpeechASR` 亦为免费；TTS 如 CosyVoice 另计）。需要有效 `SILICONFLOW_API_KEY`。价格会调整，**不承诺永久免费**；以价格页与控制台账单为准。
+
+控制台 Key：https://cloud.siliconflow.cn/account/ak
+
+### 百炼费用（仅可选公网直链）
+
+若你显式选择 `bailian`：截至 2026-07-30 阿里云百炼[官方价格页](https://help.aliyun.com/zh/model-studio/model-pricing)华北 2 `qwen3-asr-flash` 约 **0.00022 元/秒**。抖音 CDN 服务端常拉不到，不作为默认。
+
+
 
 ### 本地 Whisper
 
