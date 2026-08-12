@@ -33,6 +33,7 @@ git clone https://gitee.com/tars123/douyin-favorites-to-knowledge.git
 cd douyin-favorites-to-knowledge
 python3 -m venv .venv
 . .venv/bin/activate
+# 2.3+ 会从 vendor/wheels 安装固定版本 douyin-knowledge-core（中立共享内核，不含 Cookie）
 python -m pip install .
 ```
 
