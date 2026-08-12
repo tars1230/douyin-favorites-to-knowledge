@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.0] - 2026-08-12
+
+### Added
+- 接入中立 `douyin-knowledge-core` 0.2.0（发布包内 `vendor/wheels/` 固定 wheel + SHA-256）。
+- 浏览器 profile 写入中立 registry（仅路径，不复制 Cookie），打开采集时持有跨进程 `profile_lock`。
+
+### Changed
+- `canonical_json` / SHA-256 / 原子写统一走 core，CLI / Markdown / SQLite 账本 / 日报语义保持兼容。
+- 单独安装仍完整可用；不依赖 Creator 或 Chat Skill。
+
 ## [2.2.5] - 2026-08-05
 
 ### Changed

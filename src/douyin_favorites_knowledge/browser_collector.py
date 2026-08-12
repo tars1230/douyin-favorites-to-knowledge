@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .core_bridge import ProfileRegistry, profile_lock
+
 
 COLLECTION_PAGE_URL = "https://www.douyin.com/user/self?showTab=favorite_collection"
 COLLECTION_API_URL = "https://www.douyin.com/aweme/v1/web/aweme/listcollection/"
@@ -16,6 +18,7 @@ LIKES_API_URL = "https://www.douyin.com/aweme/v1/web/aweme/favorite/"
 SOURCES = frozenset({"collection", "like"})
 SESSION_COOKIE_NAMES = frozenset({"sessionid", "sessionid_ss", "sid_guard"})
 AWEME_ID = re.compile(r"^[0-9]{6,30}$")
+PROFILE_ORIGIN = "favorites"
 
 
 def default_profile_dir() -> Path:
@@ -30,6 +33,17 @@ def default_profile_dir() -> Path:
     else:
         root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     return root / "douyin-favorites-to-knowledge" / "browser-profile"
+
+
+def register_browser_profile(profile_dir: Path) -> Any:
+    """Register the local auth profile by path only; never copy Cookie data."""
+    profile_dir = Path(profile_dir).expanduser().resolve()
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return ProfileRegistry().register_existing_profile(
+        profile_dir,
+        platform_name="douyin",
+        origin=PROFILE_ORIGIN,
+    )
 
 
 def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collection") -> dict[str, Any] | None:
@@ -72,6 +86,8 @@ class BrowserCollector:
         self._playwright = None
         self._context = None
         self._page = None
+        self._profile_lock_cm = None
+        self.profile_record = None
 
     async def open(self, *, headless: bool) -> None:
         try:
@@ -82,29 +98,37 @@ class BrowserCollector:
             ) from exc
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        self._playwright = await async_playwright().start()
-        channels = [self.channel] if self.channel else ["chrome", "msedge", None]
-        for channel in channels:
-            kwargs: dict[str, Any] = {
-                "user_data_dir": str(self.profile_dir),
-                "headless": headless,
-                "viewport": {"width": 1280, "height": 800},
-                "locale": "zh-CN",
-            }
-            if channel:
-                kwargs["channel"] = channel
-            try:
-                self._context = await self._playwright.chromium.launch_persistent_context(**kwargs)
-                break
-            except Exception:
-                self._context = None
-        if self._context is None:
-            await self._playwright.stop()
-            self._playwright = None
-            raise ValueError(
-                "no supported browser is available; install Chrome, Edge, or Playwright Chromium"
-            )
-        self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+        # Cross-product mutual exclusion + neutral registry (path only, no Cookie copy).
+        self._profile_lock_cm = profile_lock(self.profile_dir, blocking=True, timeout=60.0)
+        self._profile_lock_cm.__enter__()
+        try:
+            self.profile_record = register_browser_profile(self.profile_dir)
+            self._playwright = await async_playwright().start()
+            channels = [self.channel] if self.channel else ["chrome", "msedge", None]
+            for channel in channels:
+                kwargs: dict[str, Any] = {
+                    "user_data_dir": str(self.profile_dir),
+                    "headless": headless,
+                    "viewport": {"width": 1280, "height": 800},
+                    "locale": "zh-CN",
+                }
+                if channel:
+                    kwargs["channel"] = channel
+                try:
+                    self._context = await self._playwright.chromium.launch_persistent_context(**kwargs)
+                    break
+                except Exception:
+                    self._context = None
+            if self._context is None:
+                await self._playwright.stop()
+                self._playwright = None
+                raise ValueError(
+                    "no supported browser is available; install Chrome, Edge, or Playwright Chromium"
+                )
+            self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+        except Exception:
+            await self.close()
+            raise
 
     async def close(self) -> None:
         if self._context is not None:
@@ -114,6 +138,9 @@ class BrowserCollector:
         self._context = None
         self._playwright = None
         self._page = None
+        if self._profile_lock_cm is not None:
+            self._profile_lock_cm.__exit__(None, None, None)
+            self._profile_lock_cm = None
 
     async def navigate(self) -> None:
         if self._page is None:
