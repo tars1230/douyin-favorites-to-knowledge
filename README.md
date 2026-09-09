@@ -264,7 +264,7 @@ douyin-favorites-knowledge check-config
 
 ### 抖音之外的来源
 
-上面的转录管线继续走抖音收藏的下载与 ASR。如果你想收的不只是抖音收藏：把某个**网页**（含页内视频/附件）或**一次多个本地文件**也收成 Markdown 存进同一套知识库，可以另装 [cue-omni-reader](https://github.com/sensedeal/cue-skills/tree/main/cue-omni-reader) 当另一条可选路径——网页 + 已授权本地文档/音频/视频 → Markdown，一次可选多个本地文件。现有转写方案不受影响。安装：`npx skills add sensedeal/cue-skills --skill cue-omni-reader`（MIT，可能计费）。
+上面的转录管线继续走抖音收藏的下载与 ASR。如果你想收的不只是抖音收藏：把某个**网页**（含页内视频/附件）或**一次多个本地文件**也收成 Markdown 存进同一套知识库，可以用 [cue-omni-reader](https://github.com/sensedeal/cue-skills/tree/main/cue-omni-reader)——网页 + 已授权本地文档/音频/视频 → Markdown，一次可选多个本地文件。安装：`npx skills add sensedeal/cue-skills --skill cue-omni-reader`（MIT，可能计费）。
 
 ## 输出结果
 
