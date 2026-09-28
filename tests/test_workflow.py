@@ -19,7 +19,11 @@ sys.path.insert(0, PYTHONPATH)
 from douyin_favorites_knowledge.security import safe_error_message  # noqa: E402
 from douyin_favorites_knowledge.cli import _apply_configured_stages, main  # noqa: E402
 from douyin_favorites_knowledge.config import default_config_path, load_config  # noqa: E402
-from douyin_favorites_knowledge.workflow import build_review  # noqa: E402
+from douyin_favorites_knowledge.workflow import (  # noqa: E402
+    _legacy_content_hash,
+    build_review,
+    normalize_item,
+)
 
 
 def cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -190,6 +194,112 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("manual migration required", result.stderr)
         self.assertFalse(next_review.exists())
+
+    def test_content_hash_ignores_observed_at(self):
+        raw = {
+            "aweme_id": "123456",
+            "title": "same content",
+            "source": "collection",
+            "observed_at": "2026-01-01T00:00:00+00:00",
+        }
+        first = normalize_item(dict(raw))
+        second = normalize_item({**raw, "observed_at": "2026-06-06T00:00:00+00:00"})
+        self.assertEqual(first["content_sha256"], second["content_sha256"])
+        self.assertNotEqual(first["observed_at"], second["observed_at"])
+
+    def test_repeat_sync_with_new_observed_at_dedupes(self):
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        promoted = cli(
+            self.config,
+            "promote",
+            "--review",
+            str(self.review),
+            "--approval",
+            str(self.approval),
+        )
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        for item in payload["items"]:
+            item["observed_at"] = "2026-06-06T00:00:00+00:00"
+        rescan = self.root / "rescan.json"
+        rescan.write_text(json.dumps(payload), encoding="utf-8")
+        next_review = self.root / "next-review.json"
+        repeat = cli(
+            self.config,
+            "scan",
+            "--input",
+            str(rescan),
+            "--review",
+            str(next_review),
+        )
+        self.assertEqual(repeat.returncode, 0, repeat.stderr)
+        summary = json.loads(next_review.read_text(encoding="utf-8"))["summary"]
+        self.assertEqual(summary["candidate_count"], 0)
+        self.assertEqual(summary["already_promoted_count"], 2)
+
+    def test_legacy_ledger_hash_migrates_on_rescan(self):
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        promoted = cli(
+            self.config,
+            "promote",
+            "--review",
+            str(self.review),
+            "--approval",
+            str(self.approval),
+        )
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        stored = normalize_item(json.loads(FIXTURE.read_text(encoding="utf-8"))["items"][0])
+        legacy = _legacy_content_hash(stored, stored["observed_at"])
+        self.assertNotEqual(legacy, stored["content_sha256"])
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "update promotions set content_sha256 = ? where aweme_id = ?",
+                (legacy, f"{stored['source']}:{stored['aweme_id']}"),
+            )
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        payload["items"][0]["observed_at"] = "2026-08-01T00:00:00+00:00"
+        rescan = self.root / "legacy-rescan.json"
+        rescan.write_text(json.dumps(payload), encoding="utf-8")
+        next_review = self.root / "legacy-review.json"
+        repeat = cli(
+            self.config,
+            "scan",
+            "--input",
+            str(rescan),
+            "--review",
+            str(next_review),
+        )
+        self.assertEqual(repeat.returncode, 0, repeat.stderr)
+        summary = json.loads(next_review.read_text(encoding="utf-8"))["summary"]
+        self.assertEqual(summary["already_promoted_count"], 2)
+        with sqlite3.connect(self.ledger) as connection:
+            row = connection.execute(
+                "select content_sha256 from promotions where aweme_id = ?",
+                (f"{stored['source']}:{stored['aweme_id']}",),
+            ).fetchone()
+        self.assertEqual(row[0], stored["content_sha256"])
+
+    def test_promote_fsync_uses_writable_handle(self):
+        import fcntl
+
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        flags: list[int] = []
+        real_fsync = os.fsync
+
+        def spy(fd: int) -> None:
+            flags.append(fcntl.fcntl(fd, fcntl.F_GETFL))
+            real_fsync(fd)
+
+        with patch("douyin_favorites_knowledge.workflow.os.fsync", spy):
+            from douyin_favorites_knowledge.workflow import promote
+
+            promote(load_config(self.config), self.review, self.approval)
+        self.assertTrue(flags)
+        self.assertTrue(all(flag & os.O_RDWR or flag & os.O_WRONLY for flag in flags))
 
     def test_scan_dry_run_writes_nothing(self):
         result = cli(

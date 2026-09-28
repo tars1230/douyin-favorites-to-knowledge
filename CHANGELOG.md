@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.1] - 2026-09-28
+
+### Fixed
+- 重复 sync 不再把每次重新生成的 `observed_at` 算进 `content_sha256`。此前第二次同步必报 `promoted item changed`，每日任务从第二天起失败。标题、描述、转录等真实内容变化仍要求人工迁移。
+- 已用 2.3.0 入库的账本：若笔记里的 `observed_at` 能复原旧哈希，则视为同一条内容并改写账本，不必手工迁移。
+- Windows 上 `promote` 不再对只读句柄调用 `os.fsync`（`OSError: [Errno 9]`）。
+- vendored `douyin-knowledge-core` 0.2.1：Windows 上 `profile_lock` 改用 `msvcrt.locking`。0.2.0 只有 Unix `fcntl`，登录/同步在浏览器打开前就失败。
+
 ## [2.3.0] - 2026-08-12
 
 ### Added

@@ -20,7 +20,17 @@ from douyin_favorites_knowledge.workflow import sha256_bytes as workflow_sha256
 class CoreBridgeTests(unittest.TestCase):
     def test_pinned_core_version(self) -> None:
         self.assertEqual(CORE_VERSION, REQUIRED_CORE_VERSION)
-        self.assertEqual(CORE_VERSION, "0.2.0")
+        self.assertEqual(CORE_VERSION, "0.2.1")
+
+    def test_vendored_wheel_has_windows_lock(self) -> None:
+        import zipfile
+
+        wheel = Path(__file__).resolve().parents[1] / "vendor" / "wheels" / "douyin_knowledge_core-0.2.1-py3-none-any.whl"
+        with zipfile.ZipFile(wheel) as archive:
+            locks = archive.read("douyin_knowledge_core/locks.py").decode()
+            metadata = archive.read("douyin_knowledge_core-0.2.1.dist-info/METADATA").decode()
+        self.assertIn("msvcrt.locking", locks)
+        self.assertIn("Version: 0.2.1", metadata)
 
     def test_canonical_json_and_hash_stable(self) -> None:
         payload = {"b": 2, "a": 1}
