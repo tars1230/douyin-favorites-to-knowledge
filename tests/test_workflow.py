@@ -282,6 +282,108 @@ class WorkflowTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row[0], stored["content_sha256"])
 
+    def test_empty_observed_at_legacy_hash_still_migrates(self):
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        for item in payload["items"]:
+            item["observed_at"] = ""
+        source = self.root / "empty-observed.json"
+        source.write_text(json.dumps(payload), encoding="utf-8")
+        self.assertEqual(self.scan(source).returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        promoted = cli(self.config, "promote", "--review", str(self.review), "--approval", str(self.approval))
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        stored = normalize_item(payload["items"][0])
+        legacy = _legacy_content_hash(stored, "")
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "update promotions set content_sha256 = ? where aweme_id = ?",
+                (legacy, f"{stored['source']}:{stored['aweme_id']}"),
+            )
+        repeat = self.scan(source)
+        self.assertEqual(repeat.returncode, 0, repeat.stderr)
+        with sqlite3.connect(self.ledger) as connection:
+            row = connection.execute(
+                "select content_sha256 from promotions where aweme_id = ?",
+                (f"{stored['source']}:{stored['aweme_id']}",),
+            ).fetchone()
+        self.assertEqual(row[0], stored["content_sha256"])
+
+    def test_dry_run_does_not_rewrite_legacy_ledger(self):
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        promoted = cli(self.config, "promote", "--review", str(self.review), "--approval", str(self.approval))
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        stored = normalize_item(json.loads(FIXTURE.read_text(encoding="utf-8"))["items"][0])
+        legacy = _legacy_content_hash(stored, stored["observed_at"])
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "update promotions set content_sha256 = ? where aweme_id = ?",
+                (legacy, f"{stored['source']}:{stored['aweme_id']}"),
+            )
+        dry = cli(
+            self.config,
+            "scan",
+            "--input",
+            str(FIXTURE),
+            "--review",
+            str(self.root / "dry-review.json"),
+            "--dry-run",
+        )
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        with sqlite3.connect(self.ledger) as connection:
+            row = connection.execute(
+                "select content_sha256 from promotions where aweme_id = ?",
+                (f"{stored['source']}:{stored['aweme_id']}",),
+            ).fetchone()
+        self.assertEqual(row[0], legacy)
+
+    def test_legacy_hash_rejects_real_content_change(self):
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        promoted = cli(self.config, "promote", "--review", str(self.review), "--approval", str(self.approval))
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        original = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        stored = normalize_item(original["items"][0])
+        legacy = _legacy_content_hash(stored, stored["observed_at"])
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "update promotions set content_sha256 = ? where aweme_id = ?",
+                (legacy, f"{stored['source']}:{stored['aweme_id']}"),
+            )
+        original["items"][0]["transcript"] += " changed"
+        changed = self.root / "legacy-changed.json"
+        changed.write_text(json.dumps(original), encoding="utf-8")
+        result = cli(self.config, "scan", "--input", str(changed), "--review", str(self.root / "legacy-changed-review.json"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("manual migration required", result.stderr)
+        with sqlite3.connect(self.ledger) as connection:
+            row = connection.execute(
+                "select content_sha256 from promotions where aweme_id = ?",
+                (f"{stored['source']}:{stored['aweme_id']}",),
+            ).fetchone()
+        self.assertEqual(row[0], legacy)
+
+    def test_promote_migrates_legacy_hash_without_second_connection(self):
+        self.assertEqual(self.scan().returncode, 0)
+        self.assertEqual(self.approve().returncode, 0)
+        first = cli(self.config, "promote", "--review", str(self.review), "--approval", str(self.approval))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        stored = normalize_item(json.loads(FIXTURE.read_text(encoding="utf-8"))["items"][0])
+        legacy = _legacy_content_hash(stored, stored["observed_at"])
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "update promotions set content_sha256 = ? where aweme_id = ?",
+                (legacy, f"{stored['source']}:{stored['aweme_id']}"),
+            )
+        again = cli(self.config, "promote", "--review", str(self.review), "--approval", str(self.approval))
+        self.assertEqual(again.returncode, 0, again.stderr)
+        with sqlite3.connect(self.ledger) as connection:
+            row = connection.execute(
+                "select content_sha256 from promotions where aweme_id = ?",
+                (f"{stored['source']}:{stored['aweme_id']}",),
+            ).fetchone()
+        self.assertEqual(row[0], stored["content_sha256"])
+
     def test_promote_fsync_uses_writable_handle(self):
         import fcntl
 
