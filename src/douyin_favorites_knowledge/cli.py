@@ -564,7 +564,12 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
     retryable_count = sum(item.get("transcript_status") in retryable_statuses for item in raw_items)
     if config.transcription.enabled:
         raw_items = [item for item in raw_items if item.get("transcript_status") not in retryable_statuses]
-    manifest = build_review(config, raw_items, f"authorized_browser:{args.source}")
+    manifest = build_review(
+        config,
+        raw_items,
+        f"authorized_browser:{args.source}",
+        persist_migration=not args.dry_run,
+    )
     candidates = manifest["items"]
     if not candidates:
         summary = {"status": "no_changes", **({"retryable_count": retryable_count} if retryable_count else {})}
@@ -670,7 +675,12 @@ def main(argv: list[str] | None = None) -> int:
             raw_items = _apply_configured_stages(list(raw_items), config)
             if args.enricher:
                 raw_items = _apply_enricher(raw_items, args.enricher, dict(config.raw))
-            manifest = build_review(config, raw_items, args.source_label or default_source_label)
+            manifest = build_review(
+                config,
+                raw_items,
+                args.source_label or default_source_label,
+                persist_migration=not args.dry_run,
+            )
             result = {"status": "valid", **manifest["summary"], "review": str(args.review)}
             if not args.dry_run:
                 atomic_write_json(args.review, manifest)

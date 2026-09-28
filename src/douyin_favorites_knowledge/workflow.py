@@ -115,25 +115,39 @@ def _observed_at_from_note(path: Path) -> str | None:
     return None
 
 
-def _rewrite_content_hash(config: Config, item: dict[str, Any]) -> None:
-    if not config.ledger_path.exists():
+def _rewrite_content_hash(
+    config: Config,
+    item: dict[str, Any],
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    if not config.ledger_path.exists() and connection is None:
         return
-    with sqlite3.connect(config.ledger_path) as connection:
-        connection.execute(
-            "update promotions set content_sha256 = ? where aweme_id = ?",
-            (item["content_sha256"], f"{item['source']}:{item['aweme_id']}"),
-        )
+    statement = "update promotions set content_sha256 = ? where aweme_id = ?"
+    parameters = (item["content_sha256"], f"{item['source']}:{item['aweme_id']}")
+    if connection is not None:
+        connection.execute(statement, parameters)
+        return
+    with sqlite3.connect(config.ledger_path) as owned:
+        owned.execute(statement, parameters)
 
 
-def _hash_matches_ledger(config: Config, item: dict[str, Any], known_hash: str) -> bool:
+def _hash_matches_ledger(
+    config: Config,
+    item: dict[str, Any],
+    known_hash: str,
+    *,
+    persist: bool = True,
+    connection: sqlite3.Connection | None = None,
+) -> bool:
     if known_hash == item["content_sha256"]:
         return True
     observed_at = _observed_at_from_note(_note_path(config, item))
-    if not observed_at:
+    if observed_at is None:
         return False
     if _legacy_content_hash(item, observed_at) != known_hash:
         return False
-    _rewrite_content_hash(config, item)
+    if persist:
+        _rewrite_content_hash(config, item, connection)
     return True
 
 
@@ -261,6 +275,8 @@ def build_review(
     config: Config,
     raw_items: Iterable[dict[str, Any]],
     source_label: str,
+    *,
+    persist_migration: bool = True,
 ) -> dict[str, Any]:
     assert_safe_value(source_label, "source_label")
     known = load_ledger(config)
@@ -277,7 +293,9 @@ def build_review(
             continue
         known_hash = _known_hash(known, item)
         if known_hash:
-            if known_hash == "legacy" or _hash_matches_ledger(config, item, known_hash):
+            if known_hash == "legacy" or _hash_matches_ledger(
+                config, item, known_hash, persist=persist_migration
+            ):
                 already_promoted += 1
                 continue
             raise ValueError(
@@ -338,7 +356,8 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError(f"invalid analysis fields for {aweme_id}")
             base["analysis"] = item["analysis"]
         expected_hash = sha256_bytes(canonical_json(base))
-        if item["content_sha256"] != expected_hash:
+        legacy_hash = sha256_bytes(canonical_json({**base, "observed_at": item["observed_at"]}))
+        if item["content_sha256"] not in {expected_hash, legacy_hash}:
             raise ValueError(f"content hash mismatch for {aweme_id}")
         if item["note"] != render_note(item):
             raise ValueError(f"rendered note mismatch for {aweme_id}")
@@ -393,6 +412,9 @@ def _promotion_plan(
     config: Config,
     selected: list[dict[str, Any]],
     known: dict[str, str],
+    *,
+    persist_migration: bool = True,
+    connection: sqlite3.Connection | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     pending: list[dict[str, Any]] = []
     skipped = 0
@@ -400,7 +422,13 @@ def _promotion_plan(
         aweme_id = item["aweme_id"]
         known_hash = _known_hash(known, item)
         if known_hash:
-            if known_hash == "legacy" or _hash_matches_ledger(config, item, known_hash):
+            if known_hash == "legacy" or _hash_matches_ledger(
+                config,
+                item,
+                known_hash,
+                persist=persist_migration,
+                connection=connection,
+            ):
                 skipped += 1
                 continue
             raise ValueError(f"ledger content conflict for {aweme_id}")
@@ -426,7 +454,9 @@ def promote(
     selected = [by_id[aweme_id] for aweme_id in approval["approved_ids"]]
 
     if dry_run:
-        pending, skipped = _promotion_plan(config, selected, load_ledger(config))
+        pending, skipped = _promotion_plan(
+            config, selected, load_ledger(config), persist_migration=False
+        )
         return {
             "promoted_count": len(pending),
             "skipped_count": skipped,
@@ -451,7 +481,12 @@ def promote(
         connection.commit()
         connection.execute("begin immediate")
         known = dict(connection.execute("select aweme_id, content_sha256 from promotions"))
-        pending, skipped = _promotion_plan(config, selected, known)
+        pending, skipped = _promotion_plan(
+            config,
+            selected,
+            known,
+            connection=connection,
+        )
         result = {
             "promoted_count": len(pending),
             "skipped_count": skipped,
@@ -481,7 +516,7 @@ def promote(
                 [
                     (
                         f"{item['source']}:{item['aweme_id']}",
-                        item["content_sha256"],
+                        _content_hash(item),
                         f"{item['source']}-{item['aweme_id']}.md",
                         review_hash,
                         now,
