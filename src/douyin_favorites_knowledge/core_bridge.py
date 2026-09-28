@@ -6,7 +6,7 @@ boundary so Favorites never depends on a sibling Skill private package.
 
 from __future__ import annotations
 
-REQUIRED_CORE_VERSION = "0.2.0"
+REQUIRED_CORE_VERSION = "0.2.1"
 
 try:
     import douyin_knowledge_core as _core
@@ -23,7 +23,7 @@ except ImportError as exc:  # pragma: no cover - exercised in packaging smoke
     raise ImportError(
         "douyin-knowledge-core is required. Install the pinned wheel first:\n"
         "  python -m pip install "
-        "./vendor/wheels/douyin_knowledge_core-0.2.0-py3-none-any.whl\n"
+        "./vendor/wheels/douyin_knowledge_core-0.2.1-py3-none-any.whl\n"
         "Then install this package."
     ) from exc
 

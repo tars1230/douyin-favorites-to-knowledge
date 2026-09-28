@@ -69,6 +69,74 @@ def _analysis(raw: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def _content_hash_payload(item: dict[str, Any], *, observed_at: str | None) -> dict[str, Any]:
+    """Hash identity. ``observed_at`` is display metadata, not content."""
+    payload = {
+        key: value
+        for key, value in item.items()
+        if key not in {"content_sha256", "note", "observed_at"}
+    }
+    if observed_at is not None:
+        payload["observed_at"] = observed_at
+    return payload
+
+
+def _content_hash(item: dict[str, Any]) -> str:
+    return sha256_bytes(canonical_json(_content_hash_payload(item, observed_at=None)))
+
+
+def _legacy_content_hash(item: dict[str, Any], observed_at: str) -> str:
+    return sha256_bytes(canonical_json(_content_hash_payload(item, observed_at=observed_at)))
+
+
+def _note_path(config: Config, item: dict[str, Any]) -> Path:
+    return config.knowledge_dir / f"{item['source']}-{item['aweme_id']}.md"
+
+
+def _observed_at_from_note(path: Path) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---", 4)
+    if end < 0:
+        return None
+    for line in text[4:end].splitlines():
+        if not line.startswith("observed_at:"):
+            continue
+        raw = line.split(":", 1)[1].strip()
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _rewrite_content_hash(config: Config, item: dict[str, Any]) -> None:
+    if not config.ledger_path.exists():
+        return
+    with sqlite3.connect(config.ledger_path) as connection:
+        connection.execute(
+            "update promotions set content_sha256 = ? where aweme_id = ?",
+            (item["content_sha256"], f"{item['source']}:{item['aweme_id']}"),
+        )
+
+
+def _hash_matches_ledger(config: Config, item: dict[str, Any], known_hash: str) -> bool:
+    if known_hash == item["content_sha256"]:
+        return True
+    observed_at = _observed_at_from_note(_note_path(config, item))
+    if not observed_at:
+        return False
+    if _legacy_content_hash(item, observed_at) != known_hash:
+        return False
+    _rewrite_content_hash(config, item)
+    return True
+
+
 def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("each source item must be an object")
@@ -102,7 +170,7 @@ def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
     analysis = _analysis(raw)
     if analysis:
         item["analysis"] = analysis
-    item["content_sha256"] = sha256_bytes(canonical_json(item))
+    item["content_sha256"] = _content_hash(item)
     item["note"] = render_note(item)
     return item
 
@@ -209,15 +277,12 @@ def build_review(
             continue
         known_hash = _known_hash(known, item)
         if known_hash:
-            if known_hash == "legacy":
+            if known_hash == "legacy" or _hash_matches_ledger(config, item, known_hash):
                 already_promoted += 1
                 continue
-            if known_hash != item["content_sha256"]:
-                raise ValueError(
-                    f"promoted item changed: {item['aweme_id']}; manual migration required"
-                )
-            already_promoted += 1
-            continue
+            raise ValueError(
+                f"promoted item changed: {item['aweme_id']}; manual migration required"
+            )
         normalized[item["aweme_id"]] = item
     items = [normalized[key] for key in sorted(normalized)]
     return {
@@ -266,7 +331,7 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
         if aweme_id in seen:
             raise ValueError(f"duplicate aweme_id in review: {aweme_id}")
         seen.add(aweme_id)
-        base = {key: item[key] for key in required - {"content_sha256", "note"}}
+        base = {key: item[key] for key in required - {"content_sha256", "note", "observed_at"}}
         if "analysis" in item:
             normalized_analysis = _analysis({"analysis": item["analysis"]})
             if normalized_analysis != item["analysis"]:
@@ -335,13 +400,10 @@ def _promotion_plan(
         aweme_id = item["aweme_id"]
         known_hash = _known_hash(known, item)
         if known_hash:
-            if known_hash == "legacy":
+            if known_hash == "legacy" or _hash_matches_ledger(config, item, known_hash):
                 skipped += 1
                 continue
-            if known_hash != item["content_sha256"]:
-                raise ValueError(f"ledger content conflict for {aweme_id}")
-            skipped += 1
-            continue
+            raise ValueError(f"ledger content conflict for {aweme_id}")
         final_path = config.knowledge_dir / f"{item['source']}-{aweme_id}.md"
         if final_path.exists() and final_path.read_text(encoding="utf-8") != item["note"]:
             raise ValueError(f"untracked note conflict for {aweme_id}")
@@ -404,7 +466,7 @@ def promote(
             for item in pending:
                 staged = staging / f"{item['source']}-{item['aweme_id']}.md"
                 staged.write_text(item["note"], encoding="utf-8")
-                with staged.open("rb") as handle:
+                with staged.open("r+b") as handle:
                     os.fsync(handle.fileno())
             for item in pending:
                 os.replace(
