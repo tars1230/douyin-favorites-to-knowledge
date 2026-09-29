@@ -262,6 +262,10 @@ douyin-favorites-knowledge check-config
 
 程序只用已授权采集到的临时播放地址下载媒体，提取音频并在临时目录转录，结束后删除临时媒体和音频；若进程被强制终止，下次运行会清理超过 24 小时的遗留临时目录。默认单视频下载上限为 512 MB，可在 `transcription.options.max_media_bytes` 调整。Whisper 的约 500 MB 模型缓存会保留给后续转录，不会作为临时媒体删除。转录失败、文件过大或预算超限的条目不会入库或写入防重账本，下次同步会自动重试。
 
+### 抖音之外的来源
+
+上面的转录管线继续走抖音收藏的下载与 ASR。如果你想收的不只是抖音收藏：把某个**网页**（含页内视频/附件）或**一次多个本地文件**也收成 Markdown 存进同一套知识库，可以用 [cue-omni-reader](https://github.com/sensedeal/cue-skills/tree/main/cue-omni-reader)——网页 + 已授权本地文档/音频/视频 → Markdown，一次可选多个本地文件。安装：`npx skills add sensedeal/cue-skills --skill cue-omni-reader`（MIT，可能计费）。
+
 ## 输出结果
 
 每条新增收藏生成一份独立 Markdown 文件，包含：
