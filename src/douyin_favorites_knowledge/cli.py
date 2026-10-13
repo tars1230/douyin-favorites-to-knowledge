@@ -548,6 +548,26 @@ def _write_daily_report(config: Config, source: str, report_date: date, items: l
     atomic_write_text(config.knowledge_dir / "日报" / f"{report_date.isoformat()}-{suffix}日报.md", "\n".join(lines))
 
 
+def _retryable_report(items: list[dict]) -> dict:
+    retryable_statuses = {"failed", "unavailable", "too_large", "budget_exceeded"}
+    reasons: dict[str, int] = {}
+    count = 0
+    for item in items:
+        status = item.get("transcript_status")
+        if status not in retryable_statuses:
+            continue
+        count += 1
+        reason = str(item.get("transcript_error") or status)
+        reasons[reason] = reasons.get(reason, 0) + 1
+    report: dict = {"retryable_count": count}
+    if reasons:
+        report["retryable_reasons"] = reasons
+        report["retryable_hint"] = "转写失败，这些条目本次没有入库。原因：" + ", ".join(
+            f"{reason}×{times}" for reason, times in sorted(reasons.items())
+        )
+    return report
+
+
 def _sync(args: argparse.Namespace, config: Config, report_date: date | None = None) -> int:
     raw_items = collect_browser_favorites(
         max_items=args.max_items,
@@ -560,10 +580,10 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
     if mismatched:
         raise ValueError(f"collector returned items outside requested source: {args.source}")
     raw_items = _apply_configured_stages(list(raw_items), config)
-    retryable_statuses = {"failed", "unavailable", "too_large", "budget_exceeded"}
-    retryable_count = sum(item.get("transcript_status") in retryable_statuses for item in raw_items)
+    report = _retryable_report(raw_items)
+    retryable_count = report["retryable_count"]
     if config.transcription.enabled:
-        raw_items = [item for item in raw_items if item.get("transcript_status") not in retryable_statuses]
+        raw_items = [item for item in raw_items if item.get("transcript_status") not in {"failed", "unavailable", "too_large", "budget_exceeded"}]
     manifest = build_review(
         config,
         raw_items,
@@ -572,7 +592,7 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
     )
     candidates = manifest["items"]
     if not candidates:
-        summary = {"status": "no_changes", **({"retryable_count": retryable_count} if retryable_count else {})}
+        summary = {"status": "no_changes", **({key: report[key] for key in ("retryable_count", "retryable_reasons", "retryable_hint") if key in report} if retryable_count else {})}
         if report_date:
             _write_daily_report(config, args.source, report_date, [])
             summary["daily_report"] = "written"
@@ -603,6 +623,10 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
     }
     if retryable_count:
         summary["retryable_count"] = retryable_count
+        if "retryable_reasons" in report:
+            summary["retryable_reasons"] = report["retryable_reasons"]
+        if "retryable_hint" in report:
+            summary["retryable_hint"] = report["retryable_hint"]
     if "notification" in result:
         summary["notification"] = result["notification"]
     if report_date:

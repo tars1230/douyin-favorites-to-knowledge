@@ -96,6 +96,20 @@ class BrowserCollectorTests(unittest.TestCase):
         )
         self.assertEqual(item["duration_seconds"], 12.5)
 
+    def test_source_item_marks_slideshow_without_treating_it_as_speech(self):
+        item = browser_collector._source_item(
+            {
+                "aweme_id": "7000000000000000001",
+                "description": "有这毅力什么成不了，干就完了",
+                "aweme_type": 68,
+                "image_count": 3,
+                "play_url": "https://example.test/slideshow.mp4",
+            },
+            "2026-10-13T00:00:00+00:00",
+        )
+        self.assertEqual(item["media_kind"], "image")
+        self.assertEqual(item["play_url"], "https://example.test/slideshow.mp4")
+
     def test_collection_paginates_and_filters_invalid_ids(self):
         with patch.object(browser_collector, "BrowserCollector", FakeCollector):
             items = asyncio.run(

@@ -7,9 +7,12 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from .media_kind import is_image_post, skipped_image
 
 
 MIN_FREE_BYTES = 1_500_000_000
@@ -17,6 +20,8 @@ MAX_MEDIA_BYTES = 512 * 1024 * 1024
 TEMP_PREFIX = "douyin-local-asr-"
 STALE_TEMP_SECONDS = 24 * 60 * 60
 DEFAULT_SAMPLE_RATE = "16000"
+_MODEL_CACHE: dict[str, Any] = {}
+_MODEL_ERRORS: dict[str, str] = {}
 
 
 def cleanup_stale_temp_dirs() -> int:
@@ -47,8 +52,11 @@ def check_environment() -> dict[str, Any]:
     return {"ready": not missing, **({"missing": missing} if missing else {})}
 
 
-def _failed(status: str) -> dict[str, str]:
-    return {"transcript": "", "transcript_source": "local_whisper", "transcript_status": status}
+def _failed(status: str, error: str = "") -> dict[str, str]:
+    result = {"transcript": "", "transcript_source": "local_whisper", "transcript_status": status}
+    if error:
+        result["transcript_error"] = error[:180]
+    return result
 
 
 def _sample_rate() -> str:
@@ -76,7 +84,7 @@ def _suffix_for_url(url: str) -> str:
     return ".bin"
 
 
-def _download(url: str, destination: Path, max_media_bytes: int) -> str | None:
+def _download(url: str, destination: Path, max_media_bytes: int) -> tuple[str | None, str]:
     request = urllib.request.Request(
         url,
         headers={
@@ -96,7 +104,7 @@ def _download(url: str, destination: Path, max_media_bytes: int) -> str | None:
             if declared:
                 try:
                     if int(declared) > max_media_bytes:
-                        return "too_large"
+                        return "too_large", "too_large"
                 except ValueError:
                     pass
             total = 0
@@ -106,15 +114,41 @@ def _download(url: str, destination: Path, max_media_bytes: int) -> str | None:
                     break
                 total += len(chunk)
                 if total > max_media_bytes:
-                    return "too_large"
+                    return "too_large", "too_large"
                 output.write(chunk)
-    except Exception:
-        return "failed"
-    return None if destination.exists() and destination.stat().st_size > 0 else "failed"
+    except urllib.error.HTTPError as exc:
+        return "failed", f"http_{exc.code}"
+    except Exception as exc:
+        return "failed", type(exc).__name__
+    if destination.exists() and destination.stat().st_size > 0:
+        return None, ""
+    return "failed", "empty_download"
+
+
+def _load_model(model_name: str):
+    """Load each Whisper model once. A load failure must stop the run, not mark every item retryable."""
+    cached = _MODEL_CACHE.get(model_name)
+    if cached is not None:
+        return cached
+    previous = _MODEL_ERRORS.get(model_name)
+    if previous:
+        raise RuntimeError(previous)
+    try:
+        from faster_whisper import WhisperModel
+
+        model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        _MODEL_ERRORS[model_name] = message[:300]
+        raise RuntimeError(message) from exc
+    _MODEL_CACHE[model_name] = model
+    return model
 
 
 def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
     """Download authorized play/video media, extract audio, transcribe locally."""
+    if is_image_post(item):
+        return skipped_image("local_whisper")
     readiness = check_environment()
     if not readiness["ready"]:
         raise ValueError(f"local Whisper transcription is not ready: {', '.join(readiness['missing'])}")
@@ -125,19 +159,22 @@ def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
     options = context.get("options") if isinstance(context.get("options"), dict) else {}
     max_media_bytes = int(options.get("max_media_bytes", MAX_MEDIA_BYTES))
     if max_media_bytes <= 0:
-        return _failed("failed")
+        return _failed("failed", "invalid_media_limit")
 
     last = "failed"
+    last_error = ""
     try:
         with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as temp_dir:
             root = Path(temp_dir)
             audio_path = root / "audio.wav"
             rate = _sample_rate()
+            extracted_ok = False
             for idx, url in enumerate(candidates):
                 media_path = root / f"source-{idx}{_suffix_for_url(url)}"
-                err = _download(url, media_path, max_media_bytes)
+                err, reason = _download(url, media_path, max_media_bytes)
                 if err:
                     last = err
+                    last_error = reason or err
                     continue
                 extracted = subprocess.run(
                     ["ffmpeg", "-nostdin", "-y", "-i", str(media_path), "-vn", "-ac", "1", "-ar", rate, str(audio_path)],
@@ -148,21 +185,26 @@ def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
                 )
                 if extracted.returncode != 0:
                     last = "failed"
+                    last_error = "ffmpeg_extract_failed"
                     continue
-                from faster_whisper import WhisperModel
+                extracted_ok = True
+                break
+            if not extracted_ok:
+                return _failed(last, last_error)
+            model = _load_model(model_name)
+            segments, _ = model.transcribe(str(audio_path), vad_filter=True, task="transcribe")
+            transcript = "\n".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+            if transcript:
+                return {
+                    "transcript": transcript,
+                    "transcript_source": "local_whisper",
+                    "transcript_status": "success",
+                }
+            return _failed("unavailable", "no_speech")
+    except RuntimeError:
+        raise
+    except (OSError, subprocess.TimeoutExpired, TimeoutError) as exc:
+        return _failed("failed", type(exc).__name__)
+    except Exception as exc:
+        return _failed("failed", type(exc).__name__)
 
-                model = WhisperModel(model_name, device="cpu", compute_type="int8")
-                segments, _ = model.transcribe(str(audio_path), vad_filter=True, task="transcribe")
-                transcript = "\n".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
-                if transcript:
-                    return {
-                        "transcript": transcript,
-                        "transcript_source": "local_whisper",
-                        "transcript_status": "success",
-                    }
-                last = "unavailable"
-    except (OSError, subprocess.TimeoutExpired, TimeoutError):
-        return _failed("failed")
-    except Exception:
-        return _failed("failed")
-    return _failed(last)

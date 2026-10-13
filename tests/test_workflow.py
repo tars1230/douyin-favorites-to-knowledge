@@ -17,12 +17,13 @@ PYTHONPATH = str(ROOT / "src")
 sys.path.insert(0, PYTHONPATH)
 
 from douyin_favorites_knowledge.security import safe_error_message  # noqa: E402
-from douyin_favorites_knowledge.cli import _apply_configured_stages, main  # noqa: E402
+from douyin_favorites_knowledge.cli import _apply_configured_stages, _retryable_report, main  # noqa: E402
 from douyin_favorites_knowledge.config import default_config_path, load_config  # noqa: E402
 from douyin_favorites_knowledge.workflow import (  # noqa: E402
     _legacy_content_hash,
     build_review,
     normalize_item,
+    render_note,
 )
 
 
@@ -645,6 +646,34 @@ class WorkflowTests(unittest.TestCase):
             enriched = _apply_configured_stages(items, load_config(self.config))
         self.assertEqual(transcribe.call_count, 1)
         self.assertEqual(enriched[1]["transcript_status"], "budget_exceeded")
+
+    def test_retryable_report_names_the_failure_instead_of_only_counting(self):
+        report = _retryable_report([
+            {"transcript_status": "failed", "transcript_error": "http_403"},
+            {"transcript_status": "failed", "transcript_error": "http_403"},
+            {"transcript_status": "skipped_image"},
+            {"transcript_status": "success", "transcript": "口播"},
+        ])
+        self.assertEqual(report["retryable_count"], 2)
+        self.assertEqual(report["retryable_reasons"], {"http_403": 2})
+        self.assertIn("http_403×2", report["retryable_hint"])
+
+    def test_image_note_does_not_present_background_music_as_transcript(self):
+        note = render_note({
+            "aweme_id": "7000000000000000001",
+            "title": "有这毅力什么成不了，干就完了",
+            "author": "",
+            "description": "有这毅力什么成不了，干就完了",
+            "transcript": "",
+            "transcript_source": "siliconflow_sensevoice",
+            "transcript_status": "skipped_image",
+            "tags": [],
+            "observed_at": "2026-10-13T00:00:00+00:00",
+            "source_url": "https://www.douyin.com/video/7000000000000000001",
+            "source": "collection",
+        })
+        self.assertIn("避免把背景音乐歌词当成正文", note)
+        self.assertNotIn("头失几个人不配有人爱", note)
 
     def test_cloud_check_config_shows_pricing_without_credentials(self):
         self.config.write_text(

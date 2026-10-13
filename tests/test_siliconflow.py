@@ -46,6 +46,20 @@ class SiliconFlowTests(unittest.TestCase):
         self.assertIn("douyinvod", calls["url"])
         self.assertEqual(calls["api_key"], "sf-key")
 
+    def test_image_post_is_not_sent_to_asr(self):
+        with patch("douyin_favorites_knowledge.siliconflow._download_media") as download:
+            result = siliconflow.transcribe(
+                {
+                    "media_kind": "image",
+                    "play_url": "https://v3-web.douyinvod.com/slideshow.mp4",
+                    "description": "有这毅力什么成不了，干就完了",
+                },
+                {},
+            )
+        download.assert_not_called()
+        self.assertEqual(result["transcript_status"], "skipped_image")
+        self.assertEqual(result["transcript"], "")
+
 
 class LocalWhisperRefererTests(unittest.TestCase):
     def test_download_request_includes_douyin_referer(self):

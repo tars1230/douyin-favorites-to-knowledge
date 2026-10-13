@@ -26,6 +26,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .media_kind import is_image_post, skipped_image
+
 KEY_NAME = "SILICONFLOW_API_KEY"
 DEFAULT_MODEL = "FunAudioLLM/SenseVoiceSmall"
 DEFAULT_ENDPOINT = "https://api.siliconflow.cn/v1/audio/transcriptions"
@@ -208,6 +210,8 @@ def _upload_transcribe(path: Path, api_key: str, model: str, endpoint: str) -> s
 
 def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
     """Download video/play with Referer, extract audio, transcribe via SiliconFlow."""
+    if is_image_post(item):
+        return skipped_image("siliconflow_sensevoice")
     readiness = check_environment()
     if not readiness["ready"]:
         raise ValueError(f"SiliconFlow transcription is not ready: {', '.join(readiness['missing'])}")

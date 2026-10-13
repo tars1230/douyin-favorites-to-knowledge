@@ -4,6 +4,8 @@ import importlib.util
 import os
 from typing import Any
 
+from .media_kind import is_image_post, skipped_image
+
 
 KEY_NAME = "DASHSCOPE_API_KEY"
 MODEL = "qwen3-asr-flash"
@@ -39,6 +41,8 @@ def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
     Warning: Douyin CDN (*.douyinvod.com) is often unreachable from Bailian servers.
     Prefer siliconflow.transcribe for Douyin media.
     """
+    if is_image_post(item):
+        return skipped_image("bailian_qwen3_asr_flash")
     readiness = check_environment()
     if not readiness["ready"]:
         raise ValueError(f"Bailian transcription is not ready: {', '.join(readiness['missing'])}")

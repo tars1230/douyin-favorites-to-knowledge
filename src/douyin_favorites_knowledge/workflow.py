@@ -217,6 +217,13 @@ def render_note(item: dict[str, Any]) -> str:
             lines.extend(["### 原始描述", "", item["description"], ""])
         if item["transcript"]:
             lines.extend(["### 转录", "", item["transcript"], ""])
+        elif item["transcript_status"] == "skipped_image":
+            lines.extend([
+                "### 转录",
+                "",
+                "这是图文，没有做语音转写，避免把背景音乐歌词当成正文。画面上的字如果没写进描述，这里不会自动识别。",
+                "",
+            ])
         elif item["transcript_status"] != "not_requested":
             lines.extend(["### 转录", "", "未获得语音转录；上方原始描述不是逐字稿。", ""])
 

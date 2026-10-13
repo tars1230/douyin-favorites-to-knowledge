@@ -55,3 +55,13 @@ class LocalWhisperTests(unittest.TestCase):
             "transcript_source": "local_whisper",
             "transcript_status": "unavailable",
         })
+
+    def test_image_post_skips_whisper_and_is_not_retryable(self):
+        with patch("douyin_favorites_knowledge.local_whisper._download") as download:
+            result = local_whisper.transcribe(
+                {"media_kind": "image", "play_url": "https://example.test/slideshow.mp4"},
+                {"model": "small"},
+            )
+        download.assert_not_called()
+        self.assertEqual(result["transcript_status"], "skipped_image")
+        self.assertEqual(result["transcript"], "")

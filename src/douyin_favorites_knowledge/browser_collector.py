@@ -4,11 +4,13 @@ import asyncio
 import os
 import platform
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .core_bridge import ProfileRegistry, profile_lock
+from .media_kind import is_image_post
 
 
 COLLECTION_PAGE_URL = "https://www.douyin.com/user/self?showTab=favorite_collection"
@@ -73,6 +75,8 @@ def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collectio
         duration = 0
     if duration > 0:
         item["duration_seconds"] = duration
+    if is_image_post(raw):
+        item["media_kind"] = "image"
     return item
 
 
@@ -217,6 +221,8 @@ class BrowserCollector:
                           return list[0] || '';
                         })(),
                         duration_seconds: Number(item.video && item.video.duration || 0) / 1000,
+                        aweme_type: Number(item.aweme_type || 0),
+                        image_count: Array.isArray(item.images) ? item.images.length : 0,
                     })),
                 };
             }""",
@@ -363,7 +369,7 @@ def collect_browser_favorites(
     if source not in SOURCES:
         raise ValueError("source must be collection or like")
     try:
-        return asyncio.run(
+        items = asyncio.run(
             _collect(
                 max_items=max_items,
                 interactive_login=interactive_login,
@@ -376,3 +382,6 @@ def collect_browser_favorites(
         raise
     except Exception as exc:
         raise ValueError("browser collection failed; close other sync processes and retry") from exc
+    if headed:
+        print("名单已抓完，浏览器窗口已关闭。接下来做转写。窗口关掉不是闪退。", file=sys.stderr)
+    return items
