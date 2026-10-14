@@ -157,6 +157,33 @@ class SiliconFlowVideoPathTests(unittest.TestCase):
         self.assertEqual(result["transcript"], "视频回退成功")
         self.assertEqual(result.get("media_kind_used"), "video")
 
+    def test_empty_sensevoice_falls_back_to_free_xingchen(self):
+        models = []
+
+        def fake_upload(path, api_key, model, endpoint):
+            models.append(model)
+            return "" if model == siliconflow.DEFAULT_MODEL else "回退后的口播"
+
+        def fake_download(url, destination, max_bytes):
+            destination.write_bytes(b"fake")
+            return None
+
+        with patch.dict(os.environ, {"SILICONFLOW_API_KEY": "sf-key"}, clear=True), patch(
+            "douyin_favorites_knowledge.siliconflow._download_media",
+            side_effect=fake_download,
+        ), patch(
+            "douyin_favorites_knowledge.siliconflow._extract_audio", return_value=False
+        ), patch(
+            "douyin_favorites_knowledge.siliconflow._upload_transcribe", side_effect=fake_upload
+        ):
+            result = siliconflow.transcribe(
+                {"play_url": "https://v3-web.douyinvod.com/big.mp4"},
+                {},
+            )
+        self.assertEqual(models, [siliconflow.DEFAULT_MODEL, siliconflow.FALLBACK_MODEL])
+        self.assertEqual(result["transcript_source"], "siliconflow_xingchen_asr")
+        self.assertEqual(result["transcript"], "回退后的口播")
+
     def test_bitrate_env_passed_to_ffmpeg(self):
         seen = {}
 

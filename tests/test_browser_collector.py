@@ -85,7 +85,7 @@ class BrowserCollectorTests(unittest.TestCase):
         )
         self.assertEqual(
             set(item),
-            {"aweme_id", "title", "author", "description", "transcript", "transcript_source", "transcript_status", "tags", "observed_at", "source", "play_url"},
+            {"aweme_id", "title", "author", "description", "transcript", "transcript_source", "transcript_status", "tags", "observed_at", "source", "play_url", "image_urls", "cover_url"},
         )
         self.assertNotIn("must-not-leak", str(item))
 
@@ -109,6 +109,26 @@ class BrowserCollectorTests(unittest.TestCase):
         )
         self.assertEqual(item["media_kind"], "image")
         self.assertEqual(item["play_url"], "https://example.test/slideshow.mp4")
+
+    def test_source_item_keeps_alternate_play_urls_without_cookies(self):
+        item = browser_collector._source_item(
+            {
+                "aweme_id": "7000000000000000001",
+                "description": "标题",
+                "play_url": "https://v3-web.douyinvod.com/a.mp4",
+                "play_urls": [
+                    "https://v3-web.douyinvod.com/a.mp4",
+                    "https://v11-web.douyinvod.com/b.mp4",
+                ],
+                "sessionid": "must-not-leak",
+            },
+            "2026-10-14T00:00:00+00:00",
+        )
+        self.assertEqual(item["play_urls"], [
+            "https://v3-web.douyinvod.com/a.mp4",
+            "https://v11-web.douyinvod.com/b.mp4",
+        ])
+        self.assertNotIn("must-not-leak", str(item))
 
     def test_collection_paginates_and_filters_invalid_ids(self):
         with patch.object(browser_collector, "BrowserCollector", FakeCollector):

@@ -675,6 +675,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("避免把背景音乐歌词当成正文", note)
         self.assertNotIn("头失几个人不配有人爱", note)
 
+    def test_screen_text_with_disclaimer_words_still_round_trips(self):
+        from douyin_favorites_knowledge.cli import _saved_screen_fields
+
+        spoken_looking = "价格 99\n\n这不是口播。\n\n下一行仍是画面上的字"
+        note = render_note({
+            "aweme_id": "7000000000000000001",
+            "title": "图文",
+            "author": "",
+            "description": "图文描述",
+            "transcript": spoken_looking,
+            "transcript_source": "siliconflow_paddleocr",
+            "transcript_status": "screen_text",
+            "tags": [],
+            "observed_at": "2026-10-14T00:00:00+00:00",
+            "source_url": "https://www.douyin.com/video/7000000000000000001",
+            "source": "collection",
+        })
+        fields = _saved_screen_fields(note, "图文描述")
+        self.assertEqual(fields["transcript"], spoken_looking)
+        self.assertEqual(fields["transcript_status"], "screen_text")
+
     def test_cloud_check_config_shows_pricing_without_credentials(self):
         self.config.write_text(
             json.dumps(

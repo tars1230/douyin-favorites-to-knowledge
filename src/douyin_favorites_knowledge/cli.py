@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import time
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from .adapters import load_adapter
 from .bailian import check_environment as check_bailian_environment
@@ -20,11 +22,14 @@ from .provider_discovery import discover as discover_providers
 from .siliconflow import check_environment as check_siliconflow_environment
 from .siliconflow import transcribe as transcribe_with_siliconflow
 from .security import safe_error_message
+from .siliconflow_vision import read_screen
+from .vision_policy import vision_enabled
 from .workflow import (
     atomic_write_json,
     atomic_write_text,
     build_approval,
     build_review,
+    load_ledger,
     promote,
     read_input,
     read_review,
@@ -221,7 +226,15 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
             "max_daily_items": DEFAULT_MAX_DAILY_ITEMS,
         }
     elif provider in {"siliconflow", "local_whisper"}:
-        options = {"max_media_bytes": 512 * 1024 * 1024}
+        options: dict[str, Any] = {"max_media_bytes": 512 * 1024 * 1024}
+        if provider == "siliconflow":
+            options["vision"] = {
+                "enabled": False,
+                "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
+                "scene_model": "Qwen/Qwen3-VL-32B-Instruct",
+                "max_daily_items": 20,
+                "max_output_tokens": 400,
+            }
     else:
         options = {}
     return {
@@ -501,6 +514,138 @@ def _apply_configured_stages(raw_items: list[dict], config: Config) -> list[dict
     return raw_items
 
 
+def _same_text(left: str, right: str) -> bool:
+    def norm(value: str) -> str:
+        return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    return norm(left) == norm(right)
+
+
+def _saved_screen_fields(note: str, description: str) -> dict[str, str] | None:
+    """Recover a promoted screen transcript so the next sync hashes the same."""
+    if 'transcript_status: "screen_text"' not in note:
+        return None
+    marker = "### 原始描述\n\n"
+    if marker in note:
+        rest = note.split(marker, 1)[1]
+        saved_description = re.split(r"\n\n(?=### |## )", rest, maxsplit=1)[0]
+        if not _same_text(saved_description, description):
+            return None
+    quoted = re.search(r'^screen_transcript: ("(?:\\.|[^"])*")$', note, re.M)
+    if quoted:
+        transcript = str(json.loads(quoted.group(1))).strip()
+    else:
+        screen = "### 画面上的字\n\n"
+        if screen not in note:
+            return None
+        transcript = note.split(screen, 1)[1].split("\n\n这不是口播。", 1)[0].strip()
+    if not transcript:
+        return None
+    source_match = re.search(r'^transcript_source: ("(?:\\.|[^"])*")$', note, re.M)
+    source = json.loads(source_match.group(1)) if source_match else "siliconflow_paddleocr"
+    return {
+        "transcript": transcript,
+        "transcript_source": source,
+        "transcript_status": "screen_text",
+    }
+
+
+def _restore_saved_screen_text(raw_items: list[dict], config: Config) -> list[dict]:
+    """Fill saved screen text even if vision is later turned off.
+
+    Skipping this when the switch is off makes the next sync hash an empty
+    transcript against a note that already has screen text, and the daily job stops.
+    """
+    known = _known_aweme_ids(config)
+    restored = []
+    for item in raw_items:
+        aweme_id = str(item.get("aweme_id") or "")
+        if aweme_id not in known:
+            restored.append(item)
+            continue
+        path = config.knowledge_dir / f"{item.get('source') or 'collection'}-{aweme_id}.md"
+        try:
+            note = path.read_text(encoding="utf-8")
+        except OSError:
+            restored.append(item)
+            continue
+        fields = _saved_screen_fields(note, str(item.get("description") or ""))
+        restored.append({**item, **fields} if fields else item)
+    return restored
+
+
+def _known_aweme_ids(config: Config) -> set[str]:
+    known: set[str] = set()
+    for key in load_ledger(config):
+        known.add(key.split(":")[-1])
+    return known
+
+
+def _vision_paid_today(config: Config) -> int:
+    path = config.ledger_path
+    if not path.exists():
+        return 0
+    today = date.today().isoformat()
+    with sqlite3.connect(path, timeout=30) as connection:
+        connection.execute(
+            "create table if not exists vision_usage (usage_date text primary key, paid_items integer not null)"
+        )
+        row = connection.execute(
+            "select paid_items from vision_usage where usage_date = ?",
+            (today,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _add_vision_paid(config: Config, count: int) -> None:
+    if count <= 0:
+        return
+    path = config.ledger_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    today = date.today().isoformat()
+    with sqlite3.connect(path, timeout=30) as connection:
+        connection.execute(
+            "create table if not exists vision_usage (usage_date text primary key, paid_items integer not null)"
+        )
+        connection.execute(
+            "insert into vision_usage (usage_date, paid_items) values (?, ?) "
+            "on conflict(usage_date) do update set paid_items = paid_items + excluded.paid_items",
+            (today, count),
+        )
+
+
+def _apply_screen_read(raw_items: list[dict], config: Config) -> list[dict]:
+    """Read picture posts with the free SiliconFlow OCR model.
+
+    The paid scene model stays off unless vision.enabled is true, so an
+    upgrade does not start a bill. Already saved items are not rewritten.
+    """
+    if config.transcription.provider != "siliconflow":
+        return raw_items
+    allow_paid = vision_enabled(config.transcription.options)
+    known = _known_aweme_ids(config)
+    used = _vision_paid_today(config)
+    started = used
+    enriched = []
+    for item in raw_items:
+        aweme_id = str(item.get("aweme_id") or "")
+        if aweme_id in known:
+            enriched.append(item)
+            continue
+        updated = read_screen(
+            item,
+            config.transcription.options,
+            daily_used=used,
+            allow_paid=allow_paid,
+        )
+        paid = updated.pop("_vision_paid", None)
+        if paid:
+            used += 1
+        enriched.append(updated)
+    _add_vision_paid(config, used - started)
+    return enriched
+
+
 def _configured_notifier(config: Config) -> tuple[str, dict] | None:
     stage: StageConfig = config.notification
     if not stage.enabled:
@@ -569,6 +714,15 @@ def _retryable_report(items: list[dict]) -> dict:
 
 
 def _sync(args: argparse.Namespace, config: Config, report_date: date | None = None) -> int:
+    from .cdn_auth import clear_cdn_cookies
+
+    try:
+        return _sync_collected(args, config, report_date)
+    finally:
+        clear_cdn_cookies()
+
+
+def _sync_collected(args: argparse.Namespace, config: Config, report_date: date | None = None) -> int:
     raw_items = collect_browser_favorites(
         max_items=args.max_items,
         interactive_login=not args.no_login_prompt,
@@ -580,6 +734,8 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
     if mismatched:
         raise ValueError(f"collector returned items outside requested source: {args.source}")
     raw_items = _apply_configured_stages(list(raw_items), config)
+    raw_items = _apply_screen_read(raw_items, config)
+    raw_items = _restore_saved_screen_text(raw_items, config)
     report = _retryable_report(raw_items)
     retryable_count = report["retryable_count"]
     if config.transcription.enabled:
@@ -697,6 +853,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 default_source_label = f"authorized_browser:{args.source}"
             raw_items = _apply_configured_stages(list(raw_items), config)
+            raw_items = _apply_screen_read(raw_items, config)
+            raw_items = _restore_saved_screen_text(raw_items, config)
             if args.enricher:
                 raw_items = _apply_enricher(raw_items, args.enricher, dict(config.raw))
             manifest = build_review(

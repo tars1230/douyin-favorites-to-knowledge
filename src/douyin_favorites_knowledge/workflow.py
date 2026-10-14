@@ -202,11 +202,15 @@ def render_note(item: dict[str, Any]) -> str:
         f"source: {quote(item['source'])}",
         f"transcript_source: {quote(item['transcript_source'])}",
         f"transcript_status: {quote(item['transcript_status'])}",
+    ]
+    if item["transcript_status"] == "screen_text" and item["transcript"]:
+        lines.append(f"screen_transcript: {quote(item['transcript'])}")
+    lines.extend([
         "---",
         "",
         f"# {item['title']}",
         "",
-    ]
+    ])
     analysis = item.get("analysis", {})
     if analysis.get("content_summary"):
         lines.extend(["## 要点", "", analysis["content_summary"], ""])
@@ -215,7 +219,16 @@ def render_note(item: dict[str, Any]) -> str:
         lines.extend(["## 原始材料", ""])
         if item["description"]:
             lines.extend(["### 原始描述", "", item["description"], ""])
-        if item["transcript"]:
+        if item["transcript"] and item["transcript_status"] == "screen_text":
+            lines.extend([
+                "### 画面上的字",
+                "",
+                item["transcript"],
+                "",
+                "这不是口播。语音没有可用正文，这里只保留画面上识别出的字。",
+                "",
+            ])
+        elif item["transcript"]:
             lines.extend(["### 转录", "", item["transcript"], ""])
         elif item["transcript_status"] == "skipped_image":
             lines.extend([

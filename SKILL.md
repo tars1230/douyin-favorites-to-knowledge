@@ -1,6 +1,6 @@
 ---
 name: douyin-favorites-to-knowledge
-version: 2.3.3
+version: 2.3.4
 description: 将用户已授权账号中的抖音视频收藏或用户明确指定的喜欢列表配置并同步到本地 Markdown 或 Obsidian 知识库；默认收藏，只有用户明确说喜欢/点赞才切换来源。首次明确选择推荐的 SiliconFlow转录、本地 Whisper 或不转录。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
 ---
 
@@ -156,6 +156,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ### ASR 媒体与码率（2.2.4+）
 - **单一路径**：下载 `play_url`/`video_url` → `ffmpeg -vn` 抽音 → 上传 SenseVoice。
 - **不再优先** `audio_url`（抖音 `music.play_url` 经常是 BGM 不是口播）。
+- 图文不送语音识别。使用硅基流动时，用免费的 `PaddleOCR-VL-1.5` 认画面上的字。付费认字默认关闭。
+- 口播主模型没字或失败时，再试一次免费的 `XingChenASR-V3.2`。主模型给出错误但非空的字时，不会自动换模型。
+- 下载播放地址时只给抖音相关域名带本轮登录态。登录态不进笔记，不发给硅基流动。
 - 环境变量：`DOUYIN_ASR_AUDIO_BITRATE`（默认 `64k`）、`DOUYIN_ASR_SAMPLE_RATE`（默认 `16000`）。
 - 网络下载阶段可能是视频体积；上传给 SenseVoice 的是抽好的小音频。
 

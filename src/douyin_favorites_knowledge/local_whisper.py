@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .cdn_auth import download_request
 from .media_kind import is_image_post, skipped_image
 
 
@@ -73,6 +74,11 @@ def _candidate_urls(item: dict[str, Any]) -> list[str]:
         if url and url not in seen:
             seen.add(url)
             out.append(url)
+    for url in item.get("play_urls") or []:
+        text = str(url or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
     return out
 
 
@@ -85,19 +91,7 @@ def _suffix_for_url(url: str) -> str:
 
 
 def _download(url: str, destination: Path, max_media_bytes: int) -> tuple[str | None, str]:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.douyin.com/",
-            "Origin": "https://www.douyin.com",
-            "Accept": "*/*",
-        },
-    )
+    request = download_request(url)
     try:
         with urllib.request.urlopen(request, timeout=180) as response, destination.open("wb") as output:
             declared = response.headers.get("Content-Length")

@@ -26,10 +26,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .cdn_auth import download_request
 from .media_kind import is_image_post, skipped_image
 
 KEY_NAME = "SILICONFLOW_API_KEY"
 DEFAULT_MODEL = "FunAudioLLM/SenseVoiceSmall"
+FALLBACK_MODEL = "XingChenAGI/XingChenASR-V3.2"
 DEFAULT_ENDPOINT = "https://api.siliconflow.cn/v1/audio/transcriptions"
 MAX_MEDIA_BYTES = 512 * 1024 * 1024
 TEMP_PREFIX = "douyin-sf-asr-"
@@ -45,12 +47,15 @@ def check_environment() -> dict[str, Any]:
     return {"ready": not missing, **({"missing": missing} if missing else {})}
 
 
-def _failed(status: str) -> dict[str, str]:
-    return {
+def _failed(status: str, error: str = "") -> dict[str, str]:
+    result = {
         "transcript": "",
         "transcript_source": "siliconflow_sensevoice",
         "transcript_status": status,
     }
+    if error:
+        result["transcript_error"] = error[:180]
+    return result
 
 
 def _audio_encode_settings() -> tuple[str, str]:
@@ -90,24 +95,18 @@ def _candidate_urls(item: dict[str, Any]) -> list[tuple[str, str]]:
             continue
         seen.add(url)
         out.append((kind, url))
+    for index, url in enumerate(item.get("play_urls") or []):
+        text = str(url or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append((f"play{index}", text))
     return out
 
 
 def _download_media(url: str, destination: Path, max_bytes: int) -> str | None:
     """Download media. Return error status or None on success."""
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.douyin.com/",
-            "Origin": "https://www.douyin.com",
-            "Accept": "*/*",
-        },
-    )
+    request = download_request(url)
     try:
         with urllib.request.urlopen(request, timeout=180) as response, destination.open("wb") as output:
             declared = response.headers.get("Content-Length")
@@ -126,7 +125,9 @@ def _download_media(url: str, destination: Path, max_bytes: int) -> str | None:
                 if total > max_bytes:
                     return "too_large"
                 output.write(chunk)
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+    except urllib.error.HTTPError as exc:
+        return f"http_{exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError):
         return "failed"
     return None if destination.exists() and destination.stat().st_size > 0 else "failed"
 
@@ -208,6 +209,24 @@ def _upload_transcribe(path: Path, api_key: str, model: str, endpoint: str) -> s
     return ""
 
 
+def _success(text: str, source: str, kind: str) -> dict[str, str]:
+    return {
+        "transcript": text,
+        "transcript_source": source,
+        "transcript_status": "success",
+        "media_kind_used": kind,
+    }
+
+
+def _transcribe_file(path: Path, api_key: str, model: str, endpoint: str) -> tuple[str, str]:
+    try:
+        return _upload_transcribe(path, api_key, model, endpoint), ""
+    except urllib.error.HTTPError as exc:
+        return "", f"http_{exc.code}"
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        return "", type(exc).__name__
+
+
 def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
     """Download video/play with Referer, extract audio, transcribe via SiliconFlow."""
     if is_image_post(item):
@@ -228,6 +247,7 @@ def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
     endpoint = str(os.environ.get("SILICONFLOW_ASR_URL") or DEFAULT_ENDPOINT).strip()
 
     last_status = "failed"
+    last_error = ""
     try:
         with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as temp_dir:
             root = Path(temp_dir)
@@ -235,25 +255,28 @@ def transcribe(item: dict[str, Any], context: dict[str, Any]) -> dict[str, str]:
                 media_path = root / f"source-{kind}{_suffix_for_url(url)}"
                 err = _download_media(url, media_path, max_media_bytes)
                 if err:
-                    last_status = err
+                    last_status = err if err in {"too_large", "unavailable"} else "failed"
+                    last_error = err
                     continue
                 upload_path = _prepare_upload(media_path, root)
-                try:
-                    text = _upload_transcribe(upload_path, api_key, model, endpoint)
-                except (OSError, TimeoutError, urllib.error.HTTPError, urllib.error.URLError):
-                    last_status = "failed"
-                    continue
+                text, upload_error = _transcribe_file(upload_path, api_key, model, endpoint)
                 if text:
-                    return {
-                        "transcript": text,
-                        "transcript_source": "siliconflow_sensevoice",
-                        "transcript_status": "success",
-                        "media_kind_used": kind,
-                    }
-                last_status = "unavailable"
-    except (OSError, subprocess.TimeoutExpired, TimeoutError):
-        return _failed("failed")
-    except Exception:
-        return _failed("failed")
+                    return _success(text, "siliconflow_sensevoice", kind)
+                if upload_error:
+                    last_status = "failed"
+                    last_error = upload_error
+                else:
+                    last_status = "unavailable"
+                    last_error = "empty_transcript"
+                if model == DEFAULT_MODEL:
+                    fallback, fallback_error = _transcribe_file(upload_path, api_key, FALLBACK_MODEL, endpoint)
+                    if fallback:
+                        return _success(fallback, "siliconflow_xingchen_asr", kind)
+                    if fallback_error and not upload_error:
+                        last_error = fallback_error
+    except (OSError, subprocess.TimeoutExpired, TimeoutError) as exc:
+        return _failed("failed", type(exc).__name__)
+    except Exception as exc:
+        return _failed("failed", type(exc).__name__)
 
-    return _failed(last_status)
+    return _failed(last_status, last_error)

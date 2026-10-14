@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .cdn_auth import remember_cdn_cookies
 from .core_bridge import ProfileRegistry, profile_lock
 from .media_kind import is_image_post
 
@@ -68,6 +69,8 @@ def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collectio
         "observed_at": observed_at,
         "source": source,
         "play_url": str(raw.get("play_url") or "").strip(),
+        "image_urls": [str(url).strip() for url in (raw.get("image_urls") or []) if str(url).strip()][:3],
+        "cover_url": str(raw.get("cover_url") or "").strip(),
     }
     try:
         duration = float(raw.get("duration_seconds") or 0)
@@ -77,6 +80,15 @@ def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collectio
         item["duration_seconds"] = duration
     if is_image_post(raw):
         item["media_kind"] = "image"
+    play_urls = []
+    seen_urls = set()
+    for url in [item["play_url"], *(raw.get("play_urls") or [])]:
+        text = str(url or "").strip()
+        if text and text not in seen_urls:
+            seen_urls.add(text)
+            play_urls.append(text)
+    if len(play_urls) > 1:
+        item["play_urls"] = play_urls[:4]
     return item
 
 
@@ -212,6 +224,14 @@ class BrowserCollector:
                         description: item.desc || '',
                         author: item.author ? item.author.nickname || '' : '',
                         play_url: item.video && item.video.play_addr && item.video.play_addr.url_list ? item.video.play_addr.url_list[0] || '' : '',
+                        play_urls: (function () {
+                          const lists = [];
+                          const play = item.video && item.video.play_addr && item.video.play_addr.url_list;
+                          const download = item.video && item.video.download_addr && item.video.download_addr.url_list;
+                          if (Array.isArray(play)) lists.push(...play);
+                          if (Array.isArray(download)) lists.push(...download);
+                          return lists.filter(Boolean).slice(0, 4);
+                        })(),
                         // Prefer original-sound style audio only. Commercial BGM music.play_url is often not speech.
                         audio_url: (function () {
                           const music = item.music || {};
@@ -223,6 +243,11 @@ class BrowserCollector:
                         duration_seconds: Number(item.video && item.video.duration || 0) / 1000,
                         aweme_type: Number(item.aweme_type || 0),
                         image_count: Array.isArray(item.images) ? item.images.length : 0,
+                        image_urls: (Array.isArray(item.images) ? item.images : []).slice(0, 3).map(img => {
+                          const list = (img && (img.url_list || img.download_url_list)) || [];
+                          return list[0] || '';
+                        }).filter(Boolean),
+                        cover_url: (item.video && item.video.cover && item.video.cover.url_list && item.video.cover.url_list[0]) || '',
                     })),
                 };
             }""",
@@ -231,6 +256,38 @@ class BrowserCollector:
         if not isinstance(result, dict):
             raise ValueError("Douyin returned an invalid collection response")
         return result
+
+    async def refresh_play_urls(self, aweme_id: str) -> list[str]:
+        """Ask the logged-in page for a fresh play URL before the window closes."""
+        if self._page is None or not AWEME_ID.fullmatch(aweme_id):
+            return []
+        result = await self._page.evaluate(
+            """async ({awemeId}) => {
+                const params = new URLSearchParams({
+                    aweme_id: awemeId,
+                    aid: '6383',
+                    channel: 'channel_pc_web',
+                });
+                const response = await fetch(
+                    'https://www.douyin.com/aweme/v1/web/aweme/detail/?' + params.toString(),
+                    {credentials: 'include'}
+                );
+                if (!response.ok) return [];
+                const data = await response.json();
+                const video = data.aweme_detail && data.aweme_detail.video;
+                if (!video) return [];
+                const lists = [];
+                const play = video.play_addr && video.play_addr.url_list;
+                const download = video.download_addr && video.download_addr.url_list;
+                if (Array.isArray(play)) lists.push(...play);
+                if (Array.isArray(download)) lists.push(...download);
+                return lists.filter(Boolean).slice(0, 4);
+            }""",
+            {"awemeId": aweme_id},
+        )
+        if not isinstance(result, list):
+            return []
+        return [str(url).strip() for url in result if str(url).strip()][:4]
 
 
 async def _login(*, timeout_seconds: int, channel: str | None, source: str = "collection") -> dict[str, Any]:
@@ -302,6 +359,38 @@ def logout_browser(*, channel: str | None = None) -> dict[str, Any]:
         raise ValueError("browser logout failed; close other sync processes and retry") from exc
 
 
+async def _refresh_video_urls(collector: BrowserCollector, items: list[dict[str, Any]]) -> None:
+    refresh = getattr(collector, "refresh_play_urls", None)
+    if refresh is None:
+        return
+    for item in items:
+        if item.get("media_kind") == "image":
+            continue
+        try:
+            fresh = await refresh(str(item.get("aweme_id") or ""))
+        except Exception:
+            continue
+        if not isinstance(fresh, list) or not fresh:
+            continue
+        item["play_url"] = fresh[0]
+        if len(fresh) > 1:
+            item["play_urls"] = fresh[:4]
+        await asyncio.sleep(0.2)
+
+
+async def _remember_cdn_cookies(collector: BrowserCollector) -> None:
+    """Copy CDN cookies into this process. They are not written to notes or logs."""
+    context = getattr(collector, "_context", None)
+    if context is None:
+        return
+    try:
+        cookies = await context.cookies()
+    except Exception:
+        return
+    if isinstance(cookies, list):
+        remember_cdn_cookies(cookies)
+
+
 async def _collect(
     *,
     max_items: int,
@@ -351,7 +440,10 @@ async def _collect(
             seen_cursors.add(cursor)
             cursor = next_cursor
             await asyncio.sleep(0.5)
-        return list(collected.values())
+        items = list(collected.values())
+        await _refresh_video_urls(collector, items)
+        await _remember_cdn_cookies(collector)
+        return items
     finally:
         await collector.close()
 
