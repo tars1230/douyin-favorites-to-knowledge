@@ -38,6 +38,13 @@ class VisionPolicyTests(unittest.TestCase):
 
 
 class ScreenReadTests(unittest.TestCase):
+    def setUp(self):
+        self._env = patch.dict(os.environ, {"SILICONFLOW_API_KEY": "test-key"})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+
     def test_ocr_hit_does_not_call_the_paid_model(self):
         calls = []
 
@@ -48,7 +55,6 @@ class ScreenReadTests(unittest.TestCase):
             payload = {"choices": [{"message": {"content": text}}]}
             return _Response(payload)
 
-        os.environ["SILICONFLOW_API_KEY"] = "test-key"
         with patch("douyin_favorites_knowledge.siliconflow_vision._load_images", return_value=[b"img"]):
             item = read_screen(
                 {"aweme_id": "1", "media_kind": "image", "transcript_status": "skipped_image", "image_urls": ["https://example.com/a.jpg"]},
@@ -101,7 +107,6 @@ class ScreenReadTests(unittest.TestCase):
             calls.append(request.data.decode())
             return _Response({"choices": [{"message": {"content": "短"}}]})
 
-        os.environ["SILICONFLOW_API_KEY"] = "test-key"
         with patch("douyin_favorites_knowledge.siliconflow_vision._load_images", return_value=[b"img"]):
             item = read_screen(
                 {"media_kind": "image", "transcript_status": "skipped_image", "image_urls": ["https://example.com/a.jpg"]},
@@ -121,7 +126,6 @@ class ScreenReadTests(unittest.TestCase):
             return _Response({"choices": [{"message": {"content": "画面上的产品参数和价格说明"}}]})
 
         webp = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"payload"
-        os.environ["SILICONFLOW_API_KEY"] = "test-key"
         with patch("douyin_favorites_knowledge.siliconflow_vision._load_images", return_value=[webp]):
             read_screen(
                 {"media_kind": "image", "transcript_status": "skipped_image", "image_urls": ["https://example.com/a.webp"]},
