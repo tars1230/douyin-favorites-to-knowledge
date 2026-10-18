@@ -131,7 +131,7 @@ def read_screen(
     opener = urlopen or urllib.request.urlopen
     ocr_model = str(vision.get("ocr_model") or OCR_MODEL)
     scene_model = str(vision.get("scene_model") or SCENE_MODEL)
-    max_tokens = int(vision.get("max_output_tokens") or MAX_OUTPUT_TOKENS)
+    max_tokens = int(vision.get("max_output_length") or MAX_OUTPUT_TOKENS)
     import tempfile
     from pathlib import Path
 

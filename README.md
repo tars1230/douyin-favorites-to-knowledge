@@ -221,10 +221,11 @@ douyin-favorites-knowledge daily --source like --no-login-prompt
 ```bash
 export SILICONFLOW_API_KEY="你的硅基流动 Key"   # https://cloud.siliconflow.cn/account/ak
 
-- **注册推荐链接**：[https://cloud.siliconflow.cn/i/1srulim9](https://cloud.siliconflow.cn/i/1srulim9)
 douyin-favorites-knowledge setup --transcription siliconflow
 douyin-favorites-knowledge check-config
 ```
+
+- **注册推荐链接**：[https://cloud.siliconflow.cn/i/1srulim9](https://cloud.siliconflow.cn/i/1srulim9)
 
 ### 百炼 URL-ASR（可选，非抖音默认）
 
@@ -242,6 +243,48 @@ douyin-favorites-knowledge check-config
 截至 **2026-08-05**，硅基流动[官方价格页](https://siliconflow.cn/pricing)语音模型 `FunAudioLLM/SenseVoiceSmall` 标注为 **免费**（同页 `TeleSpeechASR` 亦为免费；TTS 如 CosyVoice 另计）。需要有效 `SILICONFLOW_API_KEY`。价格会调整，**不承诺永久免费**；以价格页与控制台账单为准。
 
 控制台 Key：https://cloud.siliconflow.cn/account/ak
+
+### 图文画面认字（2.3.4+）
+
+转录 provider 选 `siliconflow` 时，图文条目（以及被跳过语音识别的图文条目）会下载到本机，用免费的 `PaddlePaddle/PaddleOCR-VL-1.5` 读画面上的字。只有在认出来的字太少（少于 12 个字符）、并且你把 `vision.enabled` 设为 `true` 时，才会对第一张图调用一次付费的 `Qwen/Qwen3-VL-32B-Instruct`，按自然日最多 `max_daily_items` 条。
+
+默认 `enabled=false`：升级到 2.3.4 不会开始扣费，只用免费 OCR。上传的是本机下载后的小图片，不上传视频，也不把抖音地址交给模型服务。Key 仍然只从环境变量 `SILICONFLOW_API_KEY` 读取。
+
+```json
+{
+  "transcription": {
+    "enabled": true,
+    "provider": "siliconflow",
+    "options": {
+      "max_media_bytes": 536870912,
+      "vision": {
+        "enabled": false,
+        "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
+        "scene_model": "Qwen/Qwen3-VL-32B-Instruct",
+        "max_daily_items": 20,
+        "max_output_length": 400
+      }
+    }
+  }
+}
+```
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `enabled` | `false` | 是否允许付费的场景识别模型；关闭时只跑免费 OCR |
+| `ocr_model` | `PaddlePaddle/PaddleOCR-VL-1.5` | 免费认字模型，负责读画面上的文字 |
+| `scene_model` | `Qwen/Qwen3-VL-32B-Instruct` | 付费模型，认字太少时看第一张图一次 |
+| `max_daily_items` | `20` | 付费调用的每日条数上限，超出仍保留免费 OCR 结果 |
+| `max_output_length` | `400` | 单次调用的输出上限（按模型 token 计） |
+
+`max_output_length` 从 2.3.5 起使用。2.3.4 生成的配置里若写的是 `max_output_tokens`，请改名或删除。
+
+#### 换成自己的模型
+
+- 把 `ocr_model` / `scene_model` 改成你在硅基流动账号里能用的其他视觉模型 id。可用模型与价格以[模型广场](https://cloud.siliconflow.cn/models)和[价格页](https://siliconflow.cn/pricing)为准，换模型之前自己先确认价格。
+- 只想要免费认字，就保持 `enabled=false`。
+- 不想做画面认字，把转录 provider 设为 `local` 或 `none`。画面认字只在 `siliconflow` 下运行。
+- 想接入其他服务商的视觉模型，用 `--enricher module:function` 或 analysis adapter 在自己的代码里处理。本仓库不会把 `SILICONFLOW_API_KEY` 发给其他域名。
 
 ### 百炼费用（仅可选公网直链）
 

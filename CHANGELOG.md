@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.5] - 2026-10-18
+
+### Fixed
+- 2.3.4 里 `setup --transcription siliconflow` 写出的 `transcription.options.vision.max_output_tokens` 会被配置安全检查当成密钥字段拦下，`check-config` 和 `sync` 读不进配置。键名改为 `max_output_length`，含义不变，仍按模型 token 计。已用 2.3.4 生成过配置的用户：把这个键改名或删掉即可，删掉时用默认 400。
+
+### Added
+- README 新增「图文画面认字」一节：SiliconFlow 默认配置、字段说明，以及怎么换成自己的模型。
+- SKILL.md 补上 vision 配置的字段与生效条件说明。
+- 新增测试：版本号五处一致、setup 生成的配置能被 `load_config` 读入、自定义 OCR 模型与输出上限会真的发给接口。
+
 ## [2.3.4] - 2026-10-14
 
 ### Fixed

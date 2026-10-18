@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -117,6 +118,39 @@ class ScreenReadTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertNotIn(SCENE_MODEL, calls[0])
         self.assertEqual(item["transcript"], "短")
+
+    def test_custom_ocr_model_is_sent(self):
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(request.data.decode())
+            return _Response({"choices": [{"message": {"content": "画面上的产品参数和价格说明"}}]})
+
+        with patch("douyin_favorites_knowledge.siliconflow_vision._load_images", return_value=[b"img"]):
+            read_screen(
+                {"media_kind": "image", "transcript_status": "skipped_image", "image_urls": ["https://example.com/a.jpg"]},
+                {"vision": {"enabled": True, "ocr_model": "my-org/my-ocr"}},
+                urlopen=urlopen,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("my-org/my-ocr", calls[0])
+        self.assertNotIn(OCR_MODEL, calls[0])
+
+    def test_custom_output_length_is_sent(self):
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(request.data.decode())
+            return _Response({"choices": [{"message": {"content": "画面上的产品参数和价格说明"}}]})
+
+        with patch("douyin_favorites_knowledge.siliconflow_vision._load_images", return_value=[b"img"]):
+            read_screen(
+                {"media_kind": "image", "transcript_status": "skipped_image", "image_urls": ["https://example.com/a.jpg"]},
+                {"vision": {"enabled": True, "max_output_length": 123}},
+                urlopen=urlopen,
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0])["max_tokens"], 123)
 
     def test_webp_bytes_are_not_labeled_jpeg(self):
         calls = []

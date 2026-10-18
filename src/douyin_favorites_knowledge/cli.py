@@ -233,7 +233,7 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
                 "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
                 "scene_model": "Qwen/Qwen3-VL-32B-Instruct",
                 "max_daily_items": 20,
-                "max_output_tokens": 400,
+                "max_output_length": 400,
             }
     else:
         options = {}

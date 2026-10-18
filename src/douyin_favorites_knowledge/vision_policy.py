@@ -6,8 +6,8 @@ SiliconFlow prices checked 2026-10-13, USD per million tokens:
 - Qwen/Qwen3-VL-32B-Instruct: input 0.20, output 0.60
 - Qwen/Qwen3-VL-30B-A3B-Instruct: input 0.29, output 1.00
 
-8B is not the cheap choice. 32B costs about the same and is the model the
-local daily report already verified. MoE and Thinking variants cost more.
+8B is not the cheap choice. 32B costs about the same and gave usable results in
+testing. MoE and Thinking variants cost more.
 Qwen3-Omni video upload is the expensive path and is not used.
 
 PaddlePaddle/PaddleOCR-VL-1.5 was listed at $0 on SiliconFlow. Use it first
