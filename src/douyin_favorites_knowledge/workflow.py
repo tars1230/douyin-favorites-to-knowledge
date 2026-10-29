@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import Config
+from .config import DEFAULT_DRIFT_POLICY, DRIFT_POLICIES, Config
 from .core_bridge import (
     atomic_write_json,
     atomic_write_text,
@@ -31,6 +31,15 @@ ANALYSIS_FIELDS = (
     "extensions",
     "action_items",
     "related_knowledge",
+)
+# Non-identity metadata. Nickname changes must not abort sync or overwrite the note body.
+# Identity is the ledger key (source + aweme_id). Title, description, transcript, tags,
+# analysis, and transcript status stay content-critical.
+METADATA_FIELDS = ("author",)
+METADATA_DRIFT_HINT = (
+    "作者昵称等元数据有变化，本次没有改写笔记。"
+    "运行 sync --list-drift 查看全部漂移；"
+    "确认后可在 config.json 将 drift_policy 设为 auto_update_metadata。"
 )
 
 
@@ -93,7 +102,7 @@ def _note_path(config: Config, item: dict[str, Any]) -> Path:
     return config.knowledge_dir / f"{item['source']}-{item['aweme_id']}.md"
 
 
-def _observed_at_from_note(path: Path) -> str | None:
+def _frontmatter_string(path: Path, key: str) -> str | None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -103,8 +112,9 @@ def _observed_at_from_note(path: Path) -> str | None:
     end = text.find("\n---", 4)
     if end < 0:
         return None
+    prefix = f"{key}:"
     for line in text[4:end].splitlines():
-        if not line.startswith("observed_at:"):
+        if not line.startswith(prefix):
             continue
         raw = line.split(":", 1)[1].strip()
         try:
@@ -113,6 +123,98 @@ def _observed_at_from_note(path: Path) -> str | None:
             return None
         return value if isinstance(value, str) else None
     return None
+
+
+def _observed_at_from_note(path: Path) -> str | None:
+    return _frontmatter_string(path, "observed_at")
+
+
+def _replace_frontmatter_string(text: str, key: str, value: str) -> str:
+    if not text.startswith("---\n"):
+        raise ValueError("promoted note is missing frontmatter")
+    end = text.find("\n---", 4)
+    if end < 0:
+        raise ValueError("promoted note frontmatter is incomplete")
+    prefix = f"{key}:"
+    replaced = False
+    updated_lines: list[str] = []
+    for line in text[4:end].splitlines():
+        if line.startswith(prefix) and not replaced:
+            updated_lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+            replaced = True
+        else:
+            updated_lines.append(line)
+    if not replaced:
+        raise ValueError(f"promoted note frontmatter has no {key}")
+    return "---\n" + "\n".join(updated_lines) + text[end:]
+
+
+def _restored_hash_matches(item: dict[str, Any], known_hash: str, note_path: Path) -> bool:
+    if _content_hash(item) == known_hash:
+        return True
+    observed_at = _observed_at_from_note(note_path)
+    if observed_at is None:
+        return False
+    return _legacy_content_hash(item, observed_at) == known_hash
+
+
+def _metadata_drift(config: Config, item: dict[str, Any], known_hash: str) -> dict[str, Any] | None:
+    """Return a metadata drift when restoring those fields reproduces the ledger hash.
+
+    Anything else, including a missing note, is not metadata-only and stays protected.
+    """
+    note_path = _note_path(config, item)
+    restored = dict(item)
+    changes: dict[str, dict[str, str]] = {}
+    for field in METADATA_FIELDS:
+        stored = _frontmatter_string(note_path, field)
+        if stored is None:
+            return None
+        restored[field] = stored
+        if stored != item[field]:
+            changes[field] = {"stored": stored, "incoming": item[field]}
+    if not changes or not _restored_hash_matches(restored, known_hash, note_path):
+        return None
+    return {
+        "aweme_id": item["aweme_id"],
+        "source": item["source"],
+        "kind": "metadata",
+        "fields": [field for field in METADATA_FIELDS if field in changes],
+        "changes": changes,
+        "_content_sha256": item["content_sha256"],
+    }
+
+
+def _public_drift(drift: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in drift.items() if not key.startswith("_")}
+
+
+def _apply_metadata_update(config: Config, drift: dict[str, Any]) -> None:
+    path = _note_path(config, drift)
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"cannot update metadata for {drift['aweme_id']}: {exc}") from exc
+    updated = original
+    for field, change in drift["changes"].items():
+        updated = _replace_frontmatter_string(updated, field, change["incoming"])
+    assert_safe_value(updated, f"note:{drift['aweme_id']}")
+    atomic_write_text(path, updated)
+    try:
+        _rewrite_content_hash(
+            config,
+            {
+                "content_sha256": drift["_content_sha256"],
+                "source": drift["source"],
+                "aweme_id": drift["aweme_id"],
+            },
+        )
+    except Exception:
+        try:
+            atomic_write_text(path, original)
+        except OSError:
+            pass
+        raise
 
 
 def _rewrite_content_hash(
@@ -297,12 +399,25 @@ def build_review(
     source_label: str,
     *,
     persist_migration: bool = True,
+    apply_metadata_updates: bool = False,
+    list_drift: bool = False,
 ) -> dict[str, Any]:
     assert_safe_value(source_label, "source_label")
+    policy = getattr(config, "drift_policy", DEFAULT_DRIFT_POLICY)
+    if policy not in DRIFT_POLICIES:
+        raise ValueError("config drift_policy must be manual or auto_update_metadata")
+    if list_drift:
+        persist_migration = False
+        apply_metadata_updates = False
+    elif policy != "auto_update_metadata":
+        apply_metadata_updates = False
     known = load_ledger(config)
     normalized: dict[str, dict[str, Any]] = {}
     input_count = 0
     already_promoted = 0
+    metadata_drifts: list[dict[str, Any]] = []
+    content_drifts: list[dict[str, Any]] = []
+    seen_drift_ids: set[str] = set()
     for raw in raw_items:
         input_count += 1
         item = normalize_item(raw)
@@ -318,22 +433,61 @@ def build_review(
             ):
                 already_promoted += 1
                 continue
-            raise ValueError(
-                f"promoted item changed: {item['aweme_id']}; manual migration required"
-            )
+            drift = _metadata_drift(config, item, known_hash)
+            if drift and item["aweme_id"] not in seen_drift_ids:
+                metadata_drifts.append(drift)
+                seen_drift_ids.add(item["aweme_id"])
+                continue
+            if drift:
+                continue
+            if item["aweme_id"] not in seen_drift_ids:
+                content_drifts.append(
+                    {
+                        "aweme_id": item["aweme_id"],
+                        "source": item["source"],
+                        "kind": "content",
+                        "fields": ["content"],
+                    }
+                )
+                seen_drift_ids.add(item["aweme_id"])
+            continue
         normalized[item["aweme_id"]] = item
+    if content_drifts and not list_drift:
+        ids = ", ".join(drift["aweme_id"] for drift in content_drifts)
+        raise ValueError(f"promoted item changed: {ids}; manual migration required")
+
+    updated = 0
+    if apply_metadata_updates:
+        for drift in metadata_drifts:
+            _apply_metadata_update(config, drift)
+            updated += 1
+
     items = [normalized[key] for key in sorted(normalized)]
-    return {
+    summary: dict[str, Any] = {
+        "input_count": input_count,
+        "candidate_count": len(items),
+        "already_promoted_count": already_promoted,
+    }
+    if updated:
+        summary["metadata_updated_count"] = updated
+    elif metadata_drifts:
+        summary["metadata_drift_count"] = len(metadata_drifts)
+        summary["metadata_drift_hint"] = METADATA_DRIFT_HINT
+    if list_drift:
+        summary["metadata_drift_count"] = len(metadata_drifts)
+        summary["content_drift_count"] = len(content_drifts)
+    drifts = [_public_drift(drift) for drift in metadata_drifts]
+    drifts.extend(content_drifts)
+    result = {
         "schema_version": SCHEMA_VERSION,
         "created_at": utc_now(),
         "source_label": source_label,
-        "summary": {
-            "input_count": input_count,
-            "candidate_count": len(items),
-            "already_promoted_count": already_promoted,
-        },
+        "summary": summary,
         "items": items,
     }
+    if list_drift or drifts:
+        result["drifts"] = drifts
+    return result
 
 
 def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:

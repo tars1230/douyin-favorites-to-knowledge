@@ -84,6 +84,11 @@ def parser() -> argparse.ArgumentParser:
     sync = commands.add_parser("sync", help="扫描新增收藏并静默写入知识库")
     _add_sync_arguments(sync)
     sync.add_argument("--yes", action="store_true", help="兼容旧版本；同步默认已静默写入")
+    sync.add_argument(
+        "--list-drift",
+        action="store_true",
+        help="一次列出已入库条目的全部漂移，不写入知识库，也不在第一条冲突处停下",
+    )
 
     daily = commands.add_parser("daily", help="同步并生成当天 Markdown 日报")
     _add_sync_arguments(daily)
@@ -178,6 +183,7 @@ def _config_summary(config: Config) -> dict:
         "status": "valid" if readiness is None else ("ready" if readiness["ready"] else "action_required"),
         "schema_version": config.raw["schema_version"],
         "mode": config.mode,
+        "drift_policy": config.drift_policy,
         "stages": stages,
         **({"transcription_readiness": readiness} if readiness is not None else {}),
         **({"cloud_transcription_pricing": pricing} if pricing is not None else {}),
@@ -722,6 +728,15 @@ def _sync(args: argparse.Namespace, config: Config, report_date: date | None = N
         clear_cdn_cookies()
 
 
+def _drift_report(manifest: dict) -> dict:
+    summary = manifest.get("summary") or {}
+    report = {}
+    for key in ("metadata_drift_count", "metadata_drift_hint", "metadata_updated_count"):
+        if summary.get(key):
+            report[key] = summary[key]
+    return report
+
+
 def _sync_collected(args: argparse.Namespace, config: Config, report_date: date | None = None) -> int:
     raw_items = collect_browser_favorites(
         max_items=args.max_items,
@@ -740,15 +755,44 @@ def _sync_collected(args: argparse.Namespace, config: Config, report_date: date 
     retryable_count = report["retryable_count"]
     if config.transcription.enabled:
         raw_items = [item for item in raw_items if item.get("transcript_status") not in {"failed", "unavailable", "too_large", "budget_exceeded"}]
+    list_drift = bool(getattr(args, "list_drift", False))
     manifest = build_review(
         config,
         raw_items,
         f"authorized_browser:{args.source}",
-        persist_migration=not args.dry_run,
+        persist_migration=not args.dry_run and not list_drift,
+        apply_metadata_updates=(
+            not args.dry_run
+            and not list_drift
+            and config.drift_policy == "auto_update_metadata"
+        ),
+        list_drift=list_drift,
     )
+    if list_drift:
+        drifts = list(manifest.get("drifts") or [])
+        _print(
+            {
+                "status": "listed",
+                "drift_count": len(drifts),
+                "metadata_drift_count": sum(1 for drift in drifts if drift.get("kind") == "metadata"),
+                "content_drift_count": sum(1 for drift in drifts if drift.get("kind") == "content"),
+                "drifts": drifts,
+                "input_count": manifest["summary"]["input_count"],
+                "candidate_count": manifest["summary"]["candidate_count"],
+                "already_promoted_count": manifest["summary"]["already_promoted_count"],
+            }
+        )
+        return 0
     candidates = manifest["items"]
+    drift_report = _drift_report(manifest)
     if not candidates:
-        summary = {"status": "no_changes", **({key: report[key] for key in ("retryable_count", "retryable_reasons", "retryable_hint") if key in report} if retryable_count else {})}
+        status = "metadata_updated" if drift_report.get("metadata_updated_count") else "no_changes"
+        retryable = (
+            {key: report[key] for key in ("retryable_count", "retryable_reasons", "retryable_hint") if key in report}
+            if retryable_count
+            else {}
+        )
+        summary = {"status": status, **retryable, **drift_report}
         if report_date:
             _write_daily_report(config, args.source, report_date, [])
             summary["daily_report"] = "written"
@@ -776,6 +820,7 @@ def _sync_collected(args: argparse.Namespace, config: Config, report_date: date 
         "status": result["status"],
         "promoted_count": result["promoted_count"],
         "skipped_count": result["skipped_count"],
+        **drift_report,
     }
     if retryable_count:
         summary["retryable_count"] = retryable_count
