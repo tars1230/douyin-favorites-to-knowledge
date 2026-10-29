@@ -30,6 +30,12 @@ class StageConfig:
         }
 
 
+# ``manual`` keeps nickname-only drift from aborting sync and does not rewrite notes.
+# ``auto_update_metadata`` rewrites those non-identity fields. Content conflicts stay protected.
+DRIFT_POLICIES = frozenset({"manual", "auto_update_metadata"})
+DEFAULT_DRIFT_POLICY = "manual"
+
+
 @dataclass(frozen=True)
 class Config:
     knowledge_dir: Path
@@ -39,6 +45,7 @@ class Config:
     analysis: StageConfig
     notification: StageConfig
     raw: dict[str, Any]
+    drift_policy: str = DEFAULT_DRIFT_POLICY
 
     def enrichment_stages(self) -> tuple[StageConfig, ...]:
         return tuple(stage for stage in (self.transcription, self.analysis) if stage.enabled)
@@ -125,12 +132,15 @@ def load_config(path: Path) -> Config:
     if isinstance(version, bool) or not isinstance(version, int) or version not in {1, 2}:
         raise ValueError("config schema_version must be 1 or 2")
     assert_safe_value(raw, "config")
-    allowed = {"schema_version", "knowledge_dir", "ledger_path"}
+    allowed = {"schema_version", "knowledge_dir", "ledger_path", "drift_policy"}
     if version == 2:
         allowed.update({"mode", "transcription", "analysis", "notification"})
     unknown = set(raw) - allowed
     if unknown:
         raise ValueError(f"unknown config fields: {sorted(unknown)}")
+    drift_policy = raw.get("drift_policy", DEFAULT_DRIFT_POLICY)
+    if not isinstance(drift_policy, str) or drift_policy not in DRIFT_POLICIES:
+        raise ValueError("config drift_policy must be manual or auto_update_metadata")
     for key in ("knowledge_dir", "ledger_path"):
         if not isinstance(raw.get(key), str) or not raw[key].strip():
             raise ValueError(f"config {key} must be a non-empty string")
@@ -163,4 +173,5 @@ def load_config(path: Path) -> Config:
         analysis=stages["analysis"],
         notification=stages["notification"],
         raw=dict(raw),
+        drift_policy=drift_policy,
     )

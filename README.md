@@ -172,6 +172,24 @@ douyin-favorites-knowledge sync --no-login-prompt
 
 `--no-login-prompt` 表示登录过期时直接失败。`--yes` 仅为旧脚本兼容保留，不再需要。
 
+### 作者改了昵称
+
+昵称变化不会再让整轮同步停在 `promoted item changed`。配置里的 `drift_policy` 默认是 `manual`（不写也一样）：只有作者昵称变了，就跳过这一条、继续同步其他收藏，笔记先保持原样。标题、描述、转录、标签等正文变化仍然中止本轮写入，不会悄悄覆盖。
+
+先看有哪些条目漂了：
+
+```bash
+douyin-favorites-knowledge sync --list-drift
+```
+
+这条命令只列出漂移，不改知识库，也不会只报第一条就停。确认只是昵称之后，可以在 `config.json` 里打开自动更新（改笔记 frontmatter 里的作者，并重写账本指纹）：
+
+```json
+"drift_policy": "auto_update_metadata"
+```
+
+`scan` 和 `sync --dry-run` 即使开了自动更新也只报告、不改笔记。
+
 ### 每晚 23:00 日报
 
 首次配置完成后，具备定时任务能力的 Agent 必须创建并验证本机每天 **23:00** 运行：

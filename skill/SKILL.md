@@ -1,6 +1,6 @@
 ---
 name: douyin-favorites-to-knowledge
-version: 2.3.5
+version: 2.3.6
 description: 将用户已授权账号中的抖音视频收藏或用户明确指定的喜欢列表配置并同步到本地 Markdown 或 Obsidian 知识库；默认收藏，只有用户明确说喜欢/点赞才切换来源。首次明确选择推荐的 SiliconFlow转录、本地 Whisper 或不转录。不得绕过登录、访问他人账号或泄露 Cookie 与私密数据。
 ---
 
@@ -60,7 +60,7 @@ douyin-favorites-knowledge setup --knowledge-dir "用户确认的目录" --trans
 douyin-favorites-knowledge sync
 ```
 
-`sync` 将新增收藏静默写入知识库。首次配置完成后，日常同步不得要求用户逐条或逐次确认；终端只返回汇总结果。SQLite 防重账本、原子文件替换和内容冲突 fail-closed 仍必须保留。
+`sync` 将新增收藏静默写入知识库。首次配置完成后，日常同步不得要求用户逐条或逐次确认；终端只返回汇总结果。SQLite 防重账本、原子文件替换和内容冲突 fail-closed 仍必须保留。作者昵称变化默认不中止同步（`drift_policy` 缺省为 `manual`），已有笔记保持不动。只有用户明确要求自动改昵称时，才把配置里的 `drift_policy` 设为 `auto_update_metadata`。要查看全部漂移而不写入，运行 `douyin-favorites-knowledge sync --list-drift`。
 
 登录失效时不打开登录页、直接失败时使用：
 
@@ -121,6 +121,7 @@ douyin-favorites-knowledge status
 - 登录过期：运行 `login`；
 - 无浏览器：安装 Playwright Chromium；
 - 无新增：把 `no_changes` 当作正常结果；
+- `promoted item changed`：正文变了，需要人工迁移。若只是作者昵称，先跑 `sync --list-drift`；默认不会再因为昵称中止整轮同步。
 - 想换目录：让用户确认后运行 `setup --force --knowledge-dir "新目录"`；
 - secret-like 配置错误：删除配置中的凭据，改从环境或 Secret Manager 读取。
 

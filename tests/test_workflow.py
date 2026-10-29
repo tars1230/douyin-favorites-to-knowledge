@@ -1172,6 +1172,307 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(sum(item["promoted_count"] for item in payloads), 2)
         self.assertEqual(sum(item["skipped_count"] for item in payloads), 2)
 
+    def _fixture_items(self) -> list[dict]:
+        return json.loads(FIXTURE.read_text(encoding="utf-8"))["items"]
+
+    def _set_drift_policy(self, policy: str) -> None:
+        payload = json.loads(self.config.read_text(encoding="utf-8"))
+        payload["drift_policy"] = policy
+        self.config.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _note_text(self, aweme_id: str, source: str = "import") -> str:
+        return (self.knowledge / f"{source}-{aweme_id}.md").read_text(encoding="utf-8")
+
+    def _ledger_hash(self, aweme_id: str, source: str = "import") -> str:
+        with sqlite3.connect(self.ledger) as connection:
+            row = connection.execute(
+                "select content_sha256 from promotions where aweme_id = ?",
+                (f"{source}:{aweme_id}",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        return row[0]
+
+    def _sync_items(self, items: list[dict], *args: str) -> tuple[int, dict, str]:
+        output = StringIO()
+        errors = StringIO()
+        with patch(
+            "douyin_favorites_knowledge.cli.collect_browser_favorites",
+            return_value=items,
+        ), redirect_stdout(output), patch("sys.stderr", errors):
+            returncode = main(["--config", str(self.config), "sync", *args])
+        stdout = output.getvalue()
+        stderr = errors.getvalue()
+        payload = json.loads(stdout) if returncode == 0 and stdout.strip() else {}
+        return returncode, payload, stderr
+
+    def test_default_drift_policy_is_manual(self):
+        self.assertEqual(load_config(self.config).drift_policy, "manual")
+        result = cli(self.config, "check-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["drift_policy"], "manual")
+        self._set_drift_policy("auto_update_metadata")
+        self.assertEqual(load_config(self.config).drift_policy, "auto_update_metadata")
+
+    def test_invalid_drift_policy_is_rejected(self):
+        self._set_drift_policy("overwrite")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("drift_policy must be manual or auto_update_metadata", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_sync_help_offers_list_drift(self):
+        result = cli(self.config, "sync", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--list-drift", result.stdout)
+
+    def test_nickname_drift_does_not_abort_and_still_promotes_new_items(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        note_before = self._note_text("7000000000000000001")
+        hash_before = self._ledger_hash("7000000000000000001")
+        items = self._fixture_items()
+        items[0]["author"] = "妙妙屋（AI 拾宝中）"
+        items[1]["author"] = "妙妙屋（AI 拾宝版）"
+        items.append(
+            {
+                "aweme_id": "7000000000000000003",
+                "title": "A third synthetic item",
+                "author": "Fixture Creator",
+                "description": "Added while nicknames drifted.",
+                "transcript": "This note is new and should still be promoted.",
+                "tags": ["fixture"],
+                "observed_at": "2026-07-26T00:00:00+00:00",
+            }
+        )
+        code, payload, stderr = self._sync_items(items)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(payload["status"], "committed")
+        self.assertEqual(payload["promoted_count"], 1)
+        self.assertEqual(payload["metadata_drift_count"], 2)
+        self.assertIn("sync --list-drift", payload["metadata_drift_hint"])
+        self.assertEqual(self._note_text("7000000000000000001"), note_before)
+        self.assertEqual(self._ledger_hash("7000000000000000001"), hash_before)
+        self.assertIn('author: "Fixture Creator"', self._note_text("7000000000000000002"))
+        self.assertTrue((self.knowledge / "import-7000000000000000003.md").exists())
+        self.assertIn("This note is new and should still be promoted.", self._note_text("7000000000000000003"))
+
+    def test_content_drift_still_aborts_without_writing(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        notes = {
+            item["aweme_id"]: self._note_text(item["aweme_id"])
+            for item in self._fixture_items()
+        }
+        hashes = {
+            item["aweme_id"]: self._ledger_hash(item["aweme_id"])
+            for item in self._fixture_items()
+        }
+        items = self._fixture_items()
+        items[0]["transcript"] += " changed"
+        items[1]["title"] = "A real title conflict"
+        items.append(
+            {
+                "aweme_id": "7000000000000000003",
+                "title": "Should not be written",
+                "description": "Sync must stop before this note exists.",
+                "tags": ["fixture"],
+            }
+        )
+        code, _, stderr = self._sync_items(items)
+        self.assertEqual(code, 1)
+        self.assertIn("manual migration required", stderr)
+        self.assertIn("7000000000000000001", stderr)
+        self.assertIn("7000000000000000002", stderr)
+        self.assertFalse((self.knowledge / "import-7000000000000000003.md").exists())
+        for aweme_id, text in notes.items():
+            self.assertEqual(self._note_text(aweme_id), text)
+            self.assertEqual(self._ledger_hash(aweme_id), hashes[aweme_id])
+
+    def test_auto_update_metadata_rewrites_nickname_only(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        self._set_drift_policy("auto_update_metadata")
+        original = normalize_item(self._fixture_items()[0])
+        untouched = self._note_text("7000000000000000002")
+        items = self._fixture_items()
+        items[0]["author"] = "妙妙屋（AI 拾宝中）"
+        code, payload, stderr = self._sync_items(items)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(payload["status"], "metadata_updated")
+        self.assertEqual(payload["metadata_updated_count"], 1)
+        note = self._note_text("7000000000000000001")
+        self.assertIn('author: "妙妙屋（AI 拾宝中）"', note)
+        self.assertIn(original["title"], note)
+        self.assertIn(original["description"], note)
+        self.assertIn(original["transcript"], note)
+        self.assertNotIn("metadata_drift", note)
+        updated = normalize_item(items[0])
+        self.assertEqual(self._ledger_hash("7000000000000000001"), updated["content_sha256"])
+        self.assertNotEqual(updated["content_sha256"], original["content_sha256"])
+        self.assertEqual(self._note_text("7000000000000000002"), untouched)
+        again, second, stderr = self._sync_items(items)
+        self.assertEqual(again, 0, stderr)
+        self.assertEqual(second, {"status": "no_changes"})
+        self.assertEqual(self._note_text("7000000000000000001"), note)
+
+    def test_auto_update_does_not_overwrite_content_or_mixed_conflicts(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        self._set_drift_policy("auto_update_metadata")
+        before = {
+            item["aweme_id"]: (self._note_text(item["aweme_id"]), self._ledger_hash(item["aweme_id"]))
+            for item in self._fixture_items()
+        }
+        items = self._fixture_items()
+        items[0]["author"] = "妙妙屋（AI 拾宝中）"
+        items[0]["title"] = "Changed title must stay protected"
+        items[1]["author"] = "妙妙屋（AI 拾宝版）"
+        items[1]["tags"] = ["workflow", "fixture", "extra"]
+        code, _, stderr = self._sync_items(items)
+        self.assertEqual(code, 1)
+        self.assertIn("manual migration required", stderr)
+        self.assertIn("7000000000000000001", stderr)
+        self.assertIn("7000000000000000002", stderr)
+        for aweme_id, (text, digest) in before.items():
+            self.assertEqual(self._note_text(aweme_id), text)
+            self.assertEqual(self._ledger_hash(aweme_id), digest)
+
+    def test_scan_does_not_apply_auto_update_metadata(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        self._set_drift_policy("auto_update_metadata")
+        before = self._note_text("7000000000000000001")
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        payload["items"][0]["author"] = "妙妙屋（AI 拾宝中）"
+        source = self.root / "nickname.json"
+        source.write_text(json.dumps(payload), encoding="utf-8")
+        result = self.scan(source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        review = json.loads(self.review.read_text(encoding="utf-8"))
+        self.assertEqual(review["summary"]["metadata_drift_count"], 1)
+        self.assertEqual(review["summary"]["candidate_count"], 0)
+        self.assertEqual(review["drifts"][0]["kind"], "metadata")
+        self.assertEqual(review["drifts"][0]["fields"], ["author"])
+        self.assertEqual(self._note_text("7000000000000000001"), before)
+
+    def test_tags_only_change_stays_a_content_conflict(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        self._set_drift_policy("auto_update_metadata")
+        before = self._note_text("7000000000000000001")
+        items = self._fixture_items()
+        items[0]["tags"] = ["workflow", "fixture", "extra"]
+        code, _, stderr = self._sync_items(items)
+        self.assertEqual(code, 1)
+        self.assertIn("manual migration required", stderr)
+        self.assertEqual(self._note_text("7000000000000000001"), before)
+
+    def test_sync_list_drift_reports_every_drift_without_writing(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        stored = normalize_item(self._fixture_items()[0])
+        legacy = _legacy_content_hash(stored, stored["observed_at"])
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "update promotions set content_sha256 = ? where aweme_id = ?",
+                (legacy, f"import:{stored['aweme_id']}"),
+            )
+        listed, payload, stderr = self._sync_items(self._fixture_items(), "--list-drift")
+        self.assertEqual(listed, 0, stderr)
+        self.assertEqual(payload["status"], "listed")
+        self.assertEqual(payload["drift_count"], 0)
+        self.assertEqual(self._ledger_hash("7000000000000000001"), legacy)
+
+        notes = {item["aweme_id"]: self._note_text(item["aweme_id"]) for item in self._fixture_items()}
+        items = self._fixture_items()
+        items[0]["author"] = "妙妙屋（AI 拾宝中）"
+        items[1]["transcript"] += " changed"
+        items.append(
+            {
+                "aweme_id": "7000000000000000003",
+                "title": "Not written during list-drift",
+                "description": "Inspection must not promote this.",
+                "tags": ["fixture"],
+            }
+        )
+        listed, payload, stderr = self._sync_items(items, "--list-drift")
+        self.assertEqual(listed, 0, stderr)
+        self.assertEqual(payload["status"], "listed")
+        self.assertEqual(payload["drift_count"], 2)
+        self.assertEqual(payload["metadata_drift_count"], 1)
+        self.assertEqual(payload["content_drift_count"], 1)
+        self.assertEqual(payload["candidate_count"], 1)
+        by_id = {drift["aweme_id"]: drift for drift in payload["drifts"]}
+        self.assertEqual(by_id["7000000000000000001"]["kind"], "metadata")
+        self.assertEqual(by_id["7000000000000000001"]["fields"], ["author"])
+        self.assertEqual(by_id["7000000000000000001"]["changes"]["author"]["stored"], "Fixture Creator")
+        self.assertEqual(by_id["7000000000000000001"]["changes"]["author"]["incoming"], "妙妙屋（AI 拾宝中）")
+        self.assertEqual(by_id["7000000000000000002"]["kind"], "content")
+        self.assertNotIn("_content_sha256", json.dumps(payload))
+        self.assertEqual(self._note_text("7000000000000000001"), notes["7000000000000000001"])
+        self.assertEqual(self._note_text("7000000000000000002"), notes["7000000000000000002"])
+        self.assertEqual(self._ledger_hash("7000000000000000001"), legacy)
+        self.assertFalse((self.knowledge / "import-7000000000000000003.md").exists())
+
+    def test_dry_run_does_not_auto_update_metadata(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        self._set_drift_policy("auto_update_metadata")
+        before = self._note_text("7000000000000000001")
+        digest = self._ledger_hash("7000000000000000001")
+        items = self._fixture_items()
+        items[0]["author"] = "妙妙屋（AI 拾宝中）"
+        items.append(
+            {
+                "aweme_id": "7000000000000000003",
+                "title": "Dry run candidate",
+                "description": "Must not be written.",
+                "tags": ["fixture"],
+            }
+        )
+        code, payload, stderr = self._sync_items(items, "--dry-run")
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(payload["status"], "dry_run")
+        self.assertEqual(payload["candidate_count"], 1)
+        self.assertEqual(payload["metadata_drift_count"], 1)
+        self.assertEqual(self._note_text("7000000000000000001"), before)
+        self.assertEqual(self._ledger_hash("7000000000000000001"), digest)
+        self.assertFalse((self.knowledge / "import-7000000000000000003.md").exists())
+
+    def test_legacy_hash_nickname_drift_can_update_author_only(self):
+        code, _, stderr = self._sync_items(self._fixture_items())
+        self.assertEqual(code, 0, stderr)
+        items = self._fixture_items()
+        stored = normalize_item(items[0])
+        legacy = _legacy_content_hash(stored, stored["observed_at"])
+        with sqlite3.connect(self.ledger) as connection:
+            connection.execute(
+                "update promotions set content_sha256 = ? where aweme_id = ?",
+                (legacy, f"import:{stored['aweme_id']}"),
+            )
+        items[0]["author"] = "妙妙屋（AI 拾宝中）"
+        manual = build_review(load_config(self.config), items, "fixture")
+        self.assertEqual(manual["summary"]["metadata_drift_count"], 1)
+        self.assertEqual(manual["summary"].get("metadata_updated_count"), None)
+        self.assertIn('author: "Fixture Creator"', self._note_text("7000000000000000001"))
+        self.assertEqual(self._ledger_hash("7000000000000000001"), legacy)
+        self.assertIn(stored["transcript"], self._note_text("7000000000000000001"))
+
+        self._set_drift_policy("auto_update_metadata")
+        updated = build_review(
+            load_config(self.config),
+            items,
+            "fixture",
+            apply_metadata_updates=True,
+        )
+        self.assertEqual(updated["summary"]["metadata_updated_count"], 1)
+        note = self._note_text("7000000000000000001")
+        self.assertIn('author: "妙妙屋（AI 拾宝中）"', note)
+        self.assertIn(stored["title"], note)
+        self.assertIn(stored["description"], note)
+        self.assertIn(stored["transcript"], note)
+        self.assertEqual(self._ledger_hash("7000000000000000001"), normalize_item(items[0])["content_sha256"])
+
     def test_sensitive_error_details_are_redacted(self):
         token = "sk-" + "A" * 24
         private_path = "/" + "Users/example/private/file"
