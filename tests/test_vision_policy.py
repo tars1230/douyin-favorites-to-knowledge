@@ -52,6 +52,27 @@ class VisionPolicyTests(unittest.TestCase):
         self.assertFalse(needs_screen_read({"transcript_status": "budget_exceeded"}, options))
         self.assertFalse(needs_screen_read({"transcript_status": "not_requested", "media_kind": "video"}, options))
 
+    def test_thin_speech_needs_frames_only_when_silent_video_is_also_on(self):
+        from douyin_favorites_knowledge.vision_policy import speech_is_thin
+
+        spoken = "口" * 48
+        self.assertGreaterEqual(len(spoken), 40)
+        item = {
+            "transcript_status": "success",
+            "transcript": spoken,
+            "duration_seconds": 120,
+            "media_kind": "video",
+            "play_url": "https://example.com/v.mp4",
+        }
+        self.assertTrue(speech_is_thin(120, len(spoken)))
+        self.assertFalse(speech_is_thin(5, len(spoken)))
+        self.assertFalse(needs_screen_read(item, {"vision": {"speech_thin": True}}))
+        self.assertFalse(needs_screen_read(item, {"vision": {"silent_video": True}}))
+        self.assertTrue(needs_screen_read(item, {"vision": {"silent_video": True, "speech_thin": True}}))
+        dense = {**item, "duration_seconds": 10, "transcript": spoken * 3}
+        self.assertFalse(needs_screen_read(dense, {"vision": {"silent_video": True, "speech_thin": True}}))
+        self.assertFalse(needs_screen_read({**item, "media_kind": "image"}, {"vision": {"silent_video": True, "speech_thin": True}}))
+
     def test_placeholder_screen_text_is_not_useful(self):
         self.assertFalse(is_useful_screen_text("无"))
         self.assertFalse(is_useful_screen_text("没有文字"))

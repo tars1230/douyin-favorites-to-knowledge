@@ -43,18 +43,32 @@ def _unique(values: list[str]) -> list[str]:
     return unique
 
 
+def extract_caption_tags(*texts: str) -> list[str]:
+    """Hashtags and bracketed phrases already written on the item.
+
+    This is not a category list. A plain title with no marker stays empty.
+    """
+    found: list[str] = []
+    for text in texts:
+        raw = str(text or "")
+        found.extend(match.group(1) for match in _HASHTAG.finditer(raw))
+        found.extend(match.group(1) for match in _BRACKET.finditer(raw))
+    return _unique(found)
+
+
 def suggest_from_item(item: dict[str, Any]) -> list[str]:
     """Phrases already on this item. Not a fixed taxonomy."""
     found: list[str] = []
     raw_tags = item.get("tags") or []
     if isinstance(raw_tags, list):
         found.extend(str(tag) for tag in raw_tags)
-    blob = "\n".join(
-        str(item.get(key) or "")
-        for key in ("title", "description", "transcript")
+    found.extend(
+        extract_caption_tags(
+            str(item.get("title") or ""),
+            str(item.get("description") or ""),
+            str(item.get("transcript") or ""),
+        )
     )
-    found.extend(match.group(1) for match in _HASHTAG.finditer(blob))
-    found.extend(match.group(1) for match in _BRACKET.finditer(blob))
     return _unique(found)[:MAX_SUGGESTIONS]
 
 

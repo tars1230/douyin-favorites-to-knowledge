@@ -12,6 +12,7 @@ from typing import Any
 from .cdn_auth import remember_cdn_cookies
 from .core_bridge import ProfileRegistry, profile_lock
 from .media_kind import is_image_post
+from .topic_classify import extract_caption_tags
 
 
 COLLECTION_PAGE_URL = "https://www.douyin.com/user/self?showTab=favorite_collection"
@@ -65,7 +66,7 @@ def _source_item(raw: dict[str, Any], observed_at: str, source: str = "collectio
         "transcript": "",
         "transcript_source": "none",
         "transcript_status": "not_requested",
-        "tags": [],
+        "tags": extract_caption_tags(title, description),
         "observed_at": observed_at,
         "source": source,
         "play_url": str(raw.get("play_url") or "").strip(),

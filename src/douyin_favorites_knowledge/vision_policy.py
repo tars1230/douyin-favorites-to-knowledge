@@ -31,6 +31,9 @@ MAX_DAILY_ITEMS = 20
 MIN_SPEECH_CHARS = 40
 MIN_OCR_CHARS = 12
 MIN_USEFUL_SCREEN_CHARS = 4
+# Optional density gate. Off unless vision.speech_thin is true.
+DEFAULT_MIN_CHARS_PER_SECOND = 1.5
+DEFAULT_MIN_THIN_DURATION = 8.0
 # ASR outcomes that mean "no usable speech", not "we refused to download".
 SILENT_VIDEO_STATUSES = frozenset({"failed", "unavailable"})
 _SPECIAL_TOKEN = re.compile(r"<\|[^|>]{0,80}\|>")
@@ -64,6 +67,54 @@ def silent_video_enabled(options: dict[str, Any] | None) -> bool:
     return _vision(options).get("silent_video") is True
 
 
+def speech_thin_enabled(options: dict[str, Any] | None) -> bool:
+    """Opt-in duration density. Default off, and it does not turn frames on."""
+    return _vision(options).get("speech_thin") is True
+
+
+def _positive_number(value: Any, default: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    number = float(value)
+    return number if number > 0 else default
+
+
+def speech_is_thin(
+    duration_seconds: float,
+    chars: int,
+    *,
+    min_chars_per_second: float = DEFAULT_MIN_CHARS_PER_SECOND,
+    min_duration: float = DEFAULT_MIN_THIN_DURATION,
+) -> bool:
+    """True when a long clip has too little speech for its length.
+
+    Clips shorter than ``min_duration`` are not thin. Missing duration is
+    not thin. This does not open frame reading by itself.
+    """
+    try:
+        duration = float(duration_seconds)
+    except (TypeError, ValueError):
+        return False
+    if duration < min_duration:
+        return False
+    if chars <= 0:
+        return True
+    return (chars / duration) < min_chars_per_second
+
+
+def item_speech_is_thin(item: dict[str, Any], options: dict[str, Any] | None) -> bool:
+    if not speech_thin_enabled(options) or is_image_post(item):
+        return False
+    vision = _vision(options)
+    chars = len(str(item.get("transcript") or "").strip())
+    return speech_is_thin(
+        item.get("duration_seconds") or 0,
+        chars,
+        min_chars_per_second=_positive_number(vision.get("min_chars_per_second"), DEFAULT_MIN_CHARS_PER_SECOND),
+        min_duration=_positive_number(vision.get("min_thin_duration"), DEFAULT_MIN_THIN_DURATION),
+    )
+
+
 def video_frame_count(options: dict[str, Any] | None) -> int:
     raw = _vision(options).get("frame_count", DEFAULT_FRAME_COUNT)
     if isinstance(raw, bool):
@@ -90,17 +141,22 @@ def needs_screen_read(item: dict[str, Any], options: dict[str, Any] | None = Non
     """Picture posts, plus silent videos only when ``vision.silent_video`` is on.
 
     A video cover is not the video. The default stays off so an ASR failure
-    does not call vision. ``too_large``, ``budget_exceeded`` and
-    ``not_requested`` are not "empty speech" and stay out of this path.
+    does not call vision. ``speech_thin`` can also treat a long clip with
+    very little speech as thin, but only together with ``silent_video``.
+    ``too_large``, ``budget_exceeded`` and ``not_requested`` stay out.
     """
     status = str(item.get("transcript_status") or "")
     transcript = str(item.get("transcript") or "").strip()
-    if status == "success" and len(transcript) >= MIN_SPEECH_CHARS:
+    long_speech = status == "success" and len(transcript) >= MIN_SPEECH_CHARS
+    thin_video = long_speech and item_speech_is_thin(item, options) and silent_video_enabled(options)
+    if long_speech and not thin_video:
         return False
     if is_image_post(item) or status == "skipped_image":
-        return True
+        return not long_speech
     if not silent_video_enabled(options):
         return False
+    if thin_video:
+        return True
     return lacks_usable_speech(item)
 
 

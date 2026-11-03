@@ -88,6 +88,19 @@ class BrowserCollectorTests(unittest.TestCase):
             {"aweme_id", "title", "author", "description", "transcript", "transcript_source", "transcript_status", "tags", "observed_at", "source", "play_url", "image_urls", "cover_url"},
         )
         self.assertNotIn("must-not-leak", str(item))
+        self.assertEqual(item["tags"], [])
+
+    def test_source_item_reads_hashtags_and_brackets_into_tags(self):
+        item = browser_collector._source_item(
+            {
+                "aweme_id": "7000000000000000001",
+                "description": "周末厨房 #刀工\n步骤写在【家常菜】里 #刀工",
+                "author": "Creator",
+            },
+            "2026-11-03T00:00:00+00:00",
+        )
+        self.assertEqual(item["tags"], ["刀工", "家常菜"])
+        self.assertNotIn("周末厨房", item["tags"])
 
     def test_source_item_preserves_positive_duration_for_budgeting(self):
         item = browser_collector._source_item(

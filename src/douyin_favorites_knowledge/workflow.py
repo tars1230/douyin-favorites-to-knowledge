@@ -19,6 +19,7 @@ from .core_bridge import (
     sha256_bytes,
 )
 from .security import assert_safe_value
+from .transcript_quality import QUALITIES, understanding_layer
 
 
 SCHEMA_VERSION = 1
@@ -101,6 +102,16 @@ def _topic_fields(raw: dict[str, Any]) -> dict[str, Any]:
     if cleaned:
         result["topic_suggestions"] = cleaned
     return result
+
+
+def _quality_field(raw: dict[str, Any]) -> dict[str, str]:
+    """Optional speech score. Absent when the gate is off, so old hashes stay."""
+    if "transcript_quality" not in raw or raw.get("transcript_quality") in (None, ""):
+        return {}
+    value = raw.get("transcript_quality")
+    if not isinstance(value, str) or value not in QUALITIES:
+        raise ValueError("item transcript_quality is not a supported value")
+    return {"transcript_quality": value}
 
 
 def _content_hash_payload(item: dict[str, Any], *, observed_at: str | None) -> dict[str, Any]:
@@ -309,6 +320,7 @@ def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
         "source": source,
     }
     item.update(_topic_fields(raw))
+    item.update(_quality_field(raw))
     analysis = _analysis(raw)
     if analysis:
         item["analysis"] = analysis
@@ -337,6 +349,8 @@ def render_note(item: dict[str, Any]) -> str:
         lines.append(f"topic: {quote(item['topic'])}")
     if item.get("topic_suggestions"):
         lines.append(f"topic_suggestions: {json.dumps(item['topic_suggestions'], ensure_ascii=False)}")
+    if item.get("transcript_quality"):
+        lines.append(f"transcript_quality: {quote(item['transcript_quality'])}")
     lines.extend([
         "---",
         "",
@@ -351,34 +365,64 @@ def render_note(item: dict[str, Any]) -> str:
     if analysis.get("content_summary"):
         lines.extend(["## 要点", "", analysis["content_summary"], ""])
 
-    if item["description"] or item["transcript"] or item["transcript_status"] != "not_requested":
-        lines.extend(["## 原始材料", ""])
-        if item["description"]:
-            lines.extend(["### 原始描述", "", item["description"], ""])
-        if item["transcript"] and item["transcript_status"] == "screen_text":
-            if item.get("transcript_source") == "siliconflow_qwen3_vl_32b":
-                disclaimer = "这不是口播。语音没有可用正文，这里是画面上的字，字太少时补一两句画面说明。"
-            else:
-                disclaimer = "这不是口播。语音没有可用正文，这里只保留画面上识别出的字。"
+    layer = understanding_layer(item)
+    lines.extend(["## 看懂", ""])
+    if layer == "speech":
+        lines.extend([
+            "### 口播",
+            "",
+            item["transcript"],
+            "",
+            "这是口播转写，不是简介。",
+            "",
+        ])
+    elif layer == "screen":
+        if item.get("transcript_source") == "siliconflow_qwen3_vl_32b":
+            disclaimer = "这不是口播。语音没有可用正文，这里是画面上的字，字太少时补一两句画面说明。"
+        else:
+            disclaimer = "这不是口播。语音没有可用正文，这里只保留画面上识别出的字。"
+        lines.extend([
+            "### 画面上的字",
+            "",
+            item["transcript"],
+            "",
+            disclaimer,
+            "",
+        ])
+    else:
+        lines.extend(["### 未看懂", ""])
+        if item.get("transcript_status") == "skipped_image":
             lines.extend([
-                "### 画面上的字",
-                "",
-                item["transcript"],
-                "",
-                disclaimer,
-                "",
-            ])
-        elif item["transcript"]:
-            lines.extend(["### 转录", "", item["transcript"], ""])
-        elif item["transcript_status"] == "skipped_image":
-            lines.extend([
-                "### 转录",
-                "",
                 "这是图文，没有做语音转写，避免把背景音乐歌词当成正文。画面上的字如果没写进描述，这里不会自动识别。",
                 "",
             ])
-        elif item["transcript_status"] != "not_requested":
-            lines.extend(["### 转录", "", "未获得语音转录；上方原始描述不是逐字稿。", ""])
+        elif item.get("transcript_quality") == "lyric_conflict" and item.get("transcript"):
+            lines.extend([
+                "简介标了音乐，转写和简介几乎对不上，所以不把下面的字当作口播。",
+                "",
+                item["transcript"],
+                "",
+            ])
+        elif item.get("transcript_quality") in {"low", "empty"} and item.get("transcript"):
+            lines.extend([
+                "转写没有通过质量闸，不能当成已经看懂。",
+                "",
+                item["transcript"],
+                "",
+            ])
+        else:
+            lines.extend(["没有可用的口播，也没有可用的画面文字。简介不是口播。", ""])
+    if item.get("description"):
+        lines.extend([
+            "## 旁注",
+            "",
+            "### 原始描述",
+            "",
+            item["description"],
+            "",
+            "这是简介，不是口播。",
+            "",
+        ])
 
     analysis_sections = (
         ("value_judgment", "价值判断"),
@@ -554,7 +598,7 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
             "content_sha256",
             "note",
         }
-        optional = {"analysis", "topic", "topic_suggestions"}
+        optional = {"analysis", "topic", "topic_suggestions", "transcript_quality"}
         if set(item) - optional != required or not set(item) <= required | optional:
             raise ValueError(f"review item {index} fields do not match schema")
         aweme_id = item["aweme_id"]
@@ -578,6 +622,10 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
             ):
                 raise ValueError(f"invalid topic_suggestions for {aweme_id}")
             base["topic_suggestions"] = suggestions
+        if "transcript_quality" in item:
+            if item["transcript_quality"] not in QUALITIES:
+                raise ValueError(f"invalid transcript_quality for {aweme_id}")
+            base["transcript_quality"] = item["transcript_quality"]
         expected_hash = sha256_bytes(canonical_json(base))
         legacy_hash = sha256_bytes(canonical_json({**base, "observed_at": item["observed_at"]}))
         if item["content_sha256"] not in {expected_hash, legacy_hash}:

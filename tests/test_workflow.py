@@ -548,8 +548,10 @@ class WorkflowTests(unittest.TestCase):
         knowledge = vault / "抖音"
         self.assertTrue((knowledge / "模板" / "抖音收藏.md").exists())
         template = (knowledge / "模板" / "抖音收藏.md").read_text(encoding="utf-8")
-        self.assertIn("## 原始材料", template)
+        self.assertIn("## 看懂", template)
+        self.assertIn("### 未看懂", template)
         self.assertIn("### 原始描述", template)
+        self.assertIn("简介不是口播", template)
         self.assertNotIn("## 研判", template)
         self.assertTrue((knowledge / "日报索引.md").exists())
         self.assertFalse((knowledge / "系统" / ".write-check.md").exists())

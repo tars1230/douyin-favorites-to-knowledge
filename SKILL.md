@@ -162,6 +162,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 - 下载播放地址时只给抖音相关域名带本轮登录态。登录态不进笔记，不发给硅基流动。
 - 画面认字配置在 transcription.options.vision（enabled 默认 false 只管付费模型；ocr_model / scene_model 可换成自己账号可用的硅基流动视觉模型），详见 README「图文画面认字」。
 - `vision.silent_video` 默认 false。只有用户明确打开后，没有可用口播的视频才抽帧走同一条硅基流动 OCR；口播成功和图文路径不变。空话不算看懂。
+- `vision.speech_thin` 默认 false。它只在 `silent_video` 也打开时，把「时长很长但字很少」当成口播稀薄。不要把它默认打开。
+- 采集会把 `#话题` 和【括号】写入 tags。笔记分层是口播、画面、未看懂；简介只放在旁注，不能当成口播。
+- `transcript_quality.enabled` 默认 false。打开后，过短、碎句、中文占比过低，或简介有音乐标记且和转写几乎无重叠，都不写成口播。没有内置歌名或分类表。
+- `batch_quality.enabled` 默认 false，只警告、不拒绝。统计只计简介、口播、画面。
 - `topic_classify.enabled` 默认 false。不要写入一套固定分类。用户要分类时用 suggest，或让用户自己提供 taxonomy 文件再 assign。分类失败不能当成这条收藏没看懂。`media_kind` 不是主题。Creator 与 Chat 的分类表与这里无关，不要读取或覆盖。
 - 环境变量：`DOUYIN_ASR_AUDIO_BITRATE`（默认 `64k`）、`DOUYIN_ASR_SAMPLE_RATE`（默认 `16000`）。
 - 网络下载阶段可能是视频体积；上传给 SenseVoice 的是抽好的小音频。

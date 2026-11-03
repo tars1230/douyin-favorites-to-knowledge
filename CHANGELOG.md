@@ -5,8 +5,13 @@
 ### Added
 - 可选 `vision.silent_video`（默认 `false`）。打开后，没有可用口播的视频会在本机用 ffmpeg 抽几帧，再用硅基流动免费的 `PaddlePaddle/PaddleOCR-VL-1.5` 认画面上的字。字太少、并且 `vision.enabled` 为 `true` 时，才对第一帧调用一次 `Qwen/Qwen3-VL-32B-Instruct`。结果要能写进笔记；「无」「没有文字」这类空话不会当成正文。抽帧或识别失败时，条目保持原来的转写失败状态，不会因此入库。图文认字、以及口播已经够长的视频，行为与 2.3.6 相同。
 - 可选 `topic_classify`（默认关闭）。`suggest` 只根据这一条自己的标签、`#话题` 和【括号】给出 `topic_suggestions`。`assign` 才读取你提供的分类文件，并且只有一个名称明显更贴切时才写入 `topic`。包内没有内置分类表。分类失败不影响转写和画面结果。`media_kind` 仍然只表示图文或视频。
+- 采集把简介里的 `#话题` 和【括号】写入 `tags`。没有这些记号时标签仍为空。
+- 可选 `transcript_quality`（默认 `enabled: false`）。打开后按字数、中文占比、碎句比例打分；简介有音乐标记且和转写几乎无重叠时记为 `lyric_conflict`。低质和歌词冲突写入 frontmatter，笔记放在「未看懂」，不写成口播。没有歌名表。
+- 新笔记按口播 → 画面 → 未看懂分层。简介只在旁注，并写明不是口播。已入库的旧笔记不重写。
+- 可选 `vision.speech_thin`（默认 `false`）。只有和 `silent_video` 一起打开时，才把时长很长但字很少的转写当成口播稀薄。`silent_video` 本身仍默认关闭。
+- 可选 `batch_quality`（默认关闭）。缺主题、低质比例过高时只在结果里警告，不拒绝入库。同步和日报的分层计数只有简介、口播、画面。
 
-这不是对外发布声明。两个开关默认都关着，不打开时与 2.3.6 相同。
+这不是对外发布声明。`silent_video`、`speech_thin`、`transcript_quality`、`topic_classify`、`batch_quality` 默认都不改变原有入库行为。
 
 ## [2.3.6] - 2026-10-29
 
