@@ -277,6 +277,8 @@ douyin-favorites-knowledge check-config
       "max_media_bytes": 536870912,
       "vision": {
         "enabled": false,
+        "silent_video": false,
+        "frame_count": 3,
         "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
         "scene_model": "Qwen/Qwen3-VL-32B-Instruct",
         "max_daily_items": 20,
@@ -290,10 +292,50 @@ douyin-favorites-knowledge check-config
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `enabled` | `false` | 是否允许付费的场景识别模型；关闭时只跑免费 OCR |
+| `silent_video` | `false` | 是否对「没有可用口播」的视频抽帧认字。关闭时，视频转写失败不会去看画面 |
+| `frame_count` | `3` | 无口播视频最多抽几帧，上限 3。约每 4 秒一帧 |
 | `ocr_model` | `PaddlePaddle/PaddleOCR-VL-1.5` | 免费认字模型，负责读画面上的文字 |
 | `scene_model` | `Qwen/Qwen3-VL-32B-Instruct` | 付费模型，认字太少时看第一张图一次 |
 | `max_daily_items` | `20` | 付费调用的每日条数上限，超出仍保留免费 OCR 结果 |
 | `max_output_length` | `400` | 单次调用的输出上限（按模型 token 计） |
+
+#### 无口播视频（默认关闭）
+
+`silent_video` 默认 `false`，升级后不会给失败的视频额外扣费或打模型。设为 `true` 之后，只有这些视频会抽帧：转写状态是 `failed` 或 `unavailable`（包含空转写），或者状态是 `success` 但正文不足 40 字。口播已经够长的视频不抽帧。图文仍然走原来的图片地址，不看这个开关。
+
+抽帧在本机完成：下载播放地址，用 ffmpeg 取出最多 `frame_count` 张小图，再把图片发给硅基流动。整段视频不上传，抖音地址也不交给模型。没有 ffmpeg、或者切不出画面时，才退回封面图。封面往往不是正文，所以只做兜底。
+
+付费的 `Qwen/Qwen3-VL-32B-Instruct` 仍然要 `enabled=true`，并且算进每天的 `max_daily_items`。只想要免费认字时，打开 `silent_video`、保持 `enabled=false` 即可。
+
+下面这些情况**不会**写进笔记，条目保持原来的转写状态（转写开着时，失败条目仍然不入库）：
+
+- 没开 `silent_video`。
+- 没有 `SILICONFLOW_API_KEY`，没有可下的播放地址，ffmpeg 失败且没有封面。
+- 免费 OCR 是空话（例如「无」「没有文字」）或不足 4 个字，并且付费模型没开或也没写出有用的话。
+- `too_large`、`budget_exceeded`、`not_requested`。这些不是「口播为空」。
+
+`media_kind` 只区分图文和视频，用来决定走不走语音识别。它不是主题。
+
+#### 可选主题（默认关闭）
+
+收藏笔记可以选填主题，默认不做。配置：
+
+```json
+"topic_classify": {
+  "enabled": false,
+  "mode": "suggest",
+  "taxonomy_file": ""
+}
+```
+
+- `enabled: false`：什么都不写。
+- `mode: "suggest"`：只看这一条自己的标签、`#话题` 和【括号】，把短语写进 frontmatter 的 `topic_suggestions` 和笔记里的「主题建议」。不指定唯一主题。
+- `mode: "assign"`：再读 `taxonomy_file`。文件可以是 JSON 数组、`{"labels": ["你的分类"]}`，或一行一个名称的文本（`#` 开头是注释）。某个名称唯一地出现在标题、标签或正文里时，写入 `topic`。几个名称打成平手就只给建议，不硬选一个。
+- 示例文件 [config/taxonomy.example.json](config/taxonomy.example.json) 故意是空列表。把分类写成你自己的文件，不要指望包里带好一套分类。
+- 分类文件缺失、写坏，或一个名称都对不上：笔记照常保存，只是没有 `topic`。转写和画面认字不受影响。
+- 已经入库的笔记不会因为后来改了分类文件被重写。
+
+Creator、Chat 各自的分类表与收藏笔记的主题互不相干。这个包不读取、也不覆盖它们。
 
 `max_output_length` 从 2.3.5 起使用。2.3.4 生成的配置里若写的是 `max_output_tokens`，请改名或删除。
 
@@ -380,12 +422,13 @@ douyin-favorites-knowledge logout
 
 ### 可选能力
 
-配置 v2 支持三个独立阶段：
+配置 v2 里，转录、分析和通知是三个独立阶段。主题是另一项可选配置，不占用这三阶段，也不改变 `media_kind`：
 
 | 阶段 | 可选来源 |
 |---|---|
 | 转录 | 内置百炼、内置本地 Whisper 或自定义 adapter |
 | 分析 | 本地模型、MiniMax 或其他 adapter |
+| 主题 | 默认关闭。`suggest` 只给建议；`assign` 只用你自己的分类文件。与 `media_kind`、Creator、Chat 的分类都不是一回事 |
 | 通知 | 飞书或其他 adapter |
 
 MiniMax 不是必需项，本地模型也不写死。不同电脑可以选择不同模型。具体能力通过 `module:function` adapter 接入；当前仓库不自动安装模型运行时、MiniMax 客户端或飞书机器人。分析默认关闭；启用后 adapter 返回 `{"analysis": {"content_summary": "…", "value_judgment": "…", "deep_analysis": "…", "extensions": "…", "action_items": "…", "related_knowledge": "…"}}`，非空字段才写入笔记。`tags` 仍可由 adapter 单独返回；不要把模型推理过程写入任一字段。

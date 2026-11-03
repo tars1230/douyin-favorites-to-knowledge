@@ -120,6 +120,15 @@
                 {"$ref": "#/$defs/disabledStage"},
                 {"$ref": "#/$defs/notificationStage"}
               ]
+            },
+            "topic_classify": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {"type": "boolean", "description": "Default false. Does not change media_kind."},
+                "mode": {"enum": ["suggest", "assign"], "description": "suggest writes topic_suggestions only. assign may write topic from taxonomy_file."},
+                "taxonomy_file": {"type": "string", "description": "User-supplied labels. Empty means no taxonomy. Not a built-in category list."}
+              }
             }
           },
           "allOf": [

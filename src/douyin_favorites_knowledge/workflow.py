@@ -78,6 +78,31 @@ def _analysis(raw: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def _topic_fields(raw: dict[str, Any]) -> dict[str, Any]:
+    """Optional classification. Absent fields keep older notes hash-compatible."""
+    if "topic" in raw and raw.get("topic") is not None and not isinstance(raw.get("topic"), str):
+        raise ValueError("item topic must be a string")
+    topic = _text(raw, "topic")
+    suggestions = raw.get("topic_suggestions") or []
+    if suggestions:
+        if not isinstance(suggestions, list) or not all(isinstance(item, str) and item.strip() for item in suggestions):
+            raise ValueError("item topic_suggestions must be non-empty strings")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in suggestions:
+        text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text or text == topic or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    result: dict[str, Any] = {}
+    if topic:
+        result["topic"] = topic
+    if cleaned:
+        result["topic_suggestions"] = cleaned
+    return result
+
+
 def _content_hash_payload(item: dict[str, Any], *, observed_at: str | None) -> dict[str, Any]:
     """Hash identity. ``observed_at`` is display metadata, not content."""
     payload = {
@@ -283,6 +308,7 @@ def normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
         "source_url": f"https://www.douyin.com/video/{aweme_id}",
         "source": source,
     }
+    item.update(_topic_fields(raw))
     analysis = _analysis(raw)
     if analysis:
         item["analysis"] = analysis
@@ -307,12 +333,20 @@ def render_note(item: dict[str, Any]) -> str:
     ]
     if item["transcript_status"] == "screen_text" and item["transcript"]:
         lines.append(f"screen_transcript: {quote(item['transcript'])}")
+    if item.get("topic"):
+        lines.append(f"topic: {quote(item['topic'])}")
+    if item.get("topic_suggestions"):
+        lines.append(f"topic_suggestions: {json.dumps(item['topic_suggestions'], ensure_ascii=False)}")
     lines.extend([
         "---",
         "",
         f"# {item['title']}",
         "",
     ])
+    if item.get("topic"):
+        lines.extend([f"主题：{item['topic']}", ""])
+    if item.get("topic_suggestions"):
+        lines.extend([f"主题建议：{'、'.join(item['topic_suggestions'])}", ""])
     analysis = item.get("analysis", {})
     if analysis.get("content_summary"):
         lines.extend(["## 要点", "", analysis["content_summary"], ""])
@@ -322,12 +356,16 @@ def render_note(item: dict[str, Any]) -> str:
         if item["description"]:
             lines.extend(["### 原始描述", "", item["description"], ""])
         if item["transcript"] and item["transcript_status"] == "screen_text":
+            if item.get("transcript_source") == "siliconflow_qwen3_vl_32b":
+                disclaimer = "这不是口播。语音没有可用正文，这里是画面上的字，字太少时补一两句画面说明。"
+            else:
+                disclaimer = "这不是口播。语音没有可用正文，这里只保留画面上识别出的字。"
             lines.extend([
                 "### 画面上的字",
                 "",
                 item["transcript"],
                 "",
-                "这不是口播。语音没有可用正文，这里只保留画面上识别出的字。",
+                disclaimer,
                 "",
             ])
         elif item["transcript"]:
@@ -516,7 +554,7 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
             "content_sha256",
             "note",
         }
-        optional = {"analysis"}
+        optional = {"analysis", "topic", "topic_suggestions"}
         if set(item) - optional != required or not set(item) <= required | optional:
             raise ValueError(f"review item {index} fields do not match schema")
         aweme_id = item["aweme_id"]
@@ -529,6 +567,17 @@ def validate_review(review: dict[str, Any]) -> list[dict[str, Any]]:
             if normalized_analysis != item["analysis"]:
                 raise ValueError(f"invalid analysis fields for {aweme_id}")
             base["analysis"] = item["analysis"]
+        if "topic" in item:
+            if not isinstance(item["topic"], str) or not item["topic"].strip():
+                raise ValueError(f"invalid topic for {aweme_id}")
+            base["topic"] = item["topic"]
+        if "topic_suggestions" in item:
+            suggestions = item["topic_suggestions"]
+            if not isinstance(suggestions, list) or not suggestions or not all(
+                isinstance(value, str) and value.strip() for value in suggestions
+            ):
+                raise ValueError(f"invalid topic_suggestions for {aweme_id}")
+            base["topic_suggestions"] = suggestions
         expected_hash = sha256_bytes(canonical_json(base))
         legacy_hash = sha256_bytes(canonical_json({**base, "observed_at": item["observed_at"]}))
         if item["content_sha256"] not in {expected_hash, legacy_hash}:

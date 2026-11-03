@@ -23,7 +23,15 @@ from .siliconflow import check_environment as check_siliconflow_environment
 from .siliconflow import transcribe as transcribe_with_siliconflow
 from .security import safe_error_message
 from .siliconflow_vision import read_screen
-from .vision_policy import vision_enabled
+from .topic_classify import classify_item, saved_topic_fields
+from .vision_policy import (
+    DEFAULT_FRAME_COUNT,
+    MAX_DAILY_ITEMS as VISION_MAX_DAILY_ITEMS,
+    MAX_OUTPUT_TOKENS,
+    OCR_MODEL,
+    SCENE_MODEL,
+    vision_enabled,
+)
 from .workflow import (
     atomic_write_json,
     atomic_write_text,
@@ -184,6 +192,7 @@ def _config_summary(config: Config) -> dict:
         "schema_version": config.raw["schema_version"],
         "mode": config.mode,
         "drift_policy": config.drift_policy,
+        "topic_classify": _topic_summary(config),
         "stages": stages,
         **({"transcription_readiness": readiness} if readiness is not None else {}),
         **({"cloud_transcription_pricing": pricing} if pricing is not None else {}),
@@ -236,10 +245,12 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
         if provider == "siliconflow":
             options["vision"] = {
                 "enabled": False,
-                "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
-                "scene_model": "Qwen/Qwen3-VL-32B-Instruct",
-                "max_daily_items": 20,
-                "max_output_length": 400,
+                "silent_video": False,
+                "frame_count": DEFAULT_FRAME_COUNT,
+                "ocr_model": OCR_MODEL,
+                "scene_model": SCENE_MODEL,
+                "max_daily_items": VISION_MAX_DAILY_ITEMS,
+                "max_output_length": MAX_OUTPUT_TOKENS,
             }
     else:
         options = {}
@@ -260,6 +271,7 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
         ),
         "analysis": {"enabled": False, "provider": "none"},
         "notification": {"enabled": False, "provider": "none"},
+        "topic_classify": {"enabled": False, "mode": "suggest", "taxonomy_file": ""},
     }
 
 
@@ -620,11 +632,75 @@ def _add_vision_paid(config: Config, count: int) -> None:
         )
 
 
+def _topic_summary(config: Config) -> dict[str, Any]:
+    settings = config.topic_classify or {}
+    summary: dict[str, Any] = {
+        "enabled": settings.get("enabled") is True,
+        "mode": settings.get("mode") or "suggest",
+    }
+    path = str(settings.get("taxonomy_file") or "")
+    if path:
+        summary["taxonomy_file"] = "present" if Path(path).is_file() else "missing"
+    return summary
+
+
+def _apply_topic_classify(raw_items: list[dict], config: Config) -> list[dict]:
+    """Label new items only. A classifier error does not drop the transcript."""
+    settings = config.topic_classify or {}
+    if settings.get("enabled") is not True:
+        return raw_items
+    known = _known_aweme_ids(config)
+    updated = []
+    for item in raw_items:
+        if str(item.get("aweme_id") or "") in known:
+            updated.append(item)
+            continue
+        try:
+            extra = classify_item(item, settings)
+        except Exception:
+            extra = {}
+        updated.append({**item, **extra} if extra else item)
+    return updated
+
+
+def _restore_saved_topic(raw_items: list[dict], config: Config) -> list[dict]:
+    """Keep a promoted topic in the hash after classification is turned off."""
+    known = _known_aweme_ids(config)
+    restored = []
+    for item in raw_items:
+        aweme_id = str(item.get("aweme_id") or "")
+        if aweme_id not in known:
+            restored.append(item)
+            continue
+        path = config.knowledge_dir / f"{item.get('source') or 'collection'}-{aweme_id}.md"
+        try:
+            note = path.read_text(encoding="utf-8")
+        except OSError:
+            restored.append(item)
+            continue
+        fields = saved_topic_fields(note)
+        if not fields:
+            restored.append(item)
+            continue
+        merged = {key: value for key, value in item.items() if key not in {"topic", "topic_suggestions"}}
+        restored.append({**merged, **fields})
+    return restored
+
+
+def _finish_understanding(raw_items: list[dict], config: Config) -> list[dict]:
+    raw_items = _apply_screen_read(raw_items, config)
+    raw_items = _restore_saved_screen_text(raw_items, config)
+    raw_items = _apply_topic_classify(raw_items, config)
+    return _restore_saved_topic(raw_items, config)
+
+
 def _apply_screen_read(raw_items: list[dict], config: Config) -> list[dict]:
-    """Read picture posts with the free SiliconFlow OCR model.
+    """Read picture posts, and silent videos when that switch is on.
 
     The paid scene model stays off unless vision.enabled is true, so an
     upgrade does not start a bill. Already saved items are not rewritten.
+    ``vision.silent_video`` defaults off: a failed video transcript still
+    skips vision until the operator opts in.
     """
     if config.transcription.provider != "siliconflow":
         return raw_items
@@ -749,8 +825,7 @@ def _sync_collected(args: argparse.Namespace, config: Config, report_date: date 
     if mismatched:
         raise ValueError(f"collector returned items outside requested source: {args.source}")
     raw_items = _apply_configured_stages(list(raw_items), config)
-    raw_items = _apply_screen_read(raw_items, config)
-    raw_items = _restore_saved_screen_text(raw_items, config)
+    raw_items = _finish_understanding(raw_items, config)
     report = _retryable_report(raw_items)
     retryable_count = report["retryable_count"]
     if config.transcription.enabled:
@@ -898,8 +973,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 default_source_label = f"authorized_browser:{args.source}"
             raw_items = _apply_configured_stages(list(raw_items), config)
-            raw_items = _apply_screen_read(raw_items, config)
-            raw_items = _restore_saved_screen_text(raw_items, config)
+            raw_items = _finish_understanding(raw_items, config)
             if args.enricher:
                 raw_items = _apply_enricher(raw_items, args.enricher, dict(config.raw))
             manifest = build_review(

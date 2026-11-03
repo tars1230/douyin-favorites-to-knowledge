@@ -25,11 +25,24 @@ SCENE_MODEL = "Qwen/Qwen3-VL-32B-Instruct"
 OCR_DETAIL = "high"
 SCENE_DETAIL = "low"
 MAX_IMAGES = 3
+DEFAULT_FRAME_COUNT = 3
 MAX_OUTPUT_TOKENS = 400
 MAX_DAILY_ITEMS = 20
 MIN_SPEECH_CHARS = 40
 MIN_OCR_CHARS = 12
+MIN_USEFUL_SCREEN_CHARS = 4
+# ASR outcomes that mean "no usable speech", not "we refused to download".
+SILENT_VIDEO_STATUSES = frozenset({"failed", "unavailable"})
 _SPECIAL_TOKEN = re.compile(r"<\|[^|>]{0,80}\|>")
+# Empty model replies. These are not a note body.
+_USELESS_LINE = re.compile(
+    r"^(?:"
+    r"无|无字|无文字|没有字|没有文字|未识别|无法识别|看不清|不清晰|空白|无内容|"
+    r"无字幕|没有字幕|图中没有文字|画面没有文字|画面上没有文字|无法辨认|"
+    r"none|n/?a|null|empty|no text|no words"
+    r")[\s。．.!！,，、]*$",
+    re.IGNORECASE,
+)
 
 # Qwen detail=low bills a 448px square, about 256 input tokens.
 LOW_DETAIL_INPUT_TOKENS = 256
@@ -37,23 +50,76 @@ SCENE_INPUT_USD_PER_M = 0.20
 SCENE_OUTPUT_USD_PER_M = 0.60
 
 
-def vision_enabled(options: dict[str, Any] | None) -> bool:
+def _vision(options: dict[str, Any] | None) -> dict[str, Any]:
     vision = (options or {}).get("vision")
-    return isinstance(vision, dict) and vision.get("enabled") is True
+    return vision if isinstance(vision, dict) else {}
 
 
-def needs_screen_read(item: dict[str, Any]) -> bool:
-    """Only picture posts. A video cover is not the video."""
+def vision_enabled(options: dict[str, Any] | None) -> bool:
+    return _vision(options).get("enabled") is True
+
+
+def silent_video_enabled(options: dict[str, Any] | None) -> bool:
+    """Opt-in frame read for videos that have no usable speech. Default off."""
+    return _vision(options).get("silent_video") is True
+
+
+def video_frame_count(options: dict[str, Any] | None) -> int:
+    raw = _vision(options).get("frame_count", DEFAULT_FRAME_COUNT)
+    if isinstance(raw, bool):
+        return DEFAULT_FRAME_COUNT
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_FRAME_COUNT
+    return max(1, min(count, MAX_IMAGES))
+
+
+def lacks_usable_speech(item: dict[str, Any]) -> bool:
+    """True when ASR did not leave a transcript long enough to skip vision."""
     status = str(item.get("transcript_status") or "")
-    if status == "success" and len(str(item.get("transcript") or "").strip()) >= MIN_SPEECH_CHARS:
+    transcript = str(item.get("transcript") or "").strip()
+    if status == "success" and len(transcript) >= MIN_SPEECH_CHARS:
         return False
-    return is_image_post(item) or status == "skipped_image"
+    if status in SILENT_VIDEO_STATUSES:
+        return True
+    return status == "success" and len(transcript) < MIN_SPEECH_CHARS
+
+
+def needs_screen_read(item: dict[str, Any], options: dict[str, Any] | None = None) -> bool:
+    """Picture posts, plus silent videos only when ``vision.silent_video`` is on.
+
+    A video cover is not the video. The default stays off so an ASR failure
+    does not call vision. ``too_large``, ``budget_exceeded`` and
+    ``not_requested`` are not "empty speech" and stay out of this path.
+    """
+    status = str(item.get("transcript_status") or "")
+    transcript = str(item.get("transcript") or "").strip()
+    if status == "success" and len(transcript) >= MIN_SPEECH_CHARS:
+        return False
+    if is_image_post(item) or status == "skipped_image":
+        return True
+    if not silent_video_enabled(options):
+        return False
+    return lacks_usable_speech(item)
 
 
 def clean_ocr_text(text: str) -> str:
     """Drop PaddleOCR location tokens before judging whether the words are enough."""
     cleaned = _SPECIAL_TOKEN.sub("", text or "")
     return "\n".join(line.strip() for line in cleaned.splitlines() if line.strip()).strip()
+
+
+def is_useful_screen_text(text: str) -> bool:
+    """True when text is worth a note body, not an empty placeholder.
+
+    Picture posts do not use this gate. The silent-video path does, so a
+    model reply of 「无」 or 「没有文字」 is not saved as the transcript.
+    """
+    lines = [line.strip() for line in clean_ocr_text(text).splitlines() if line.strip()]
+    if not lines or all(_USELESS_LINE.match(line) for line in lines):
+        return False
+    return len("".join(lines)) >= MIN_USEFUL_SCREEN_CHARS
 
 
 def _image_urls(item: dict[str, Any]) -> list[str]:

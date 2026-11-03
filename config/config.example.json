@@ -14,5 +14,10 @@
   "notification": {
     "enabled": false,
     "provider": "none"
+  },
+  "topic_classify": {
+    "enabled": false,
+    "mode": "suggest",
+    "taxonomy_file": ""
   }
 }
