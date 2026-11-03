@@ -25,11 +25,27 @@ SCENE_MODEL = "Qwen/Qwen3-VL-32B-Instruct"
 OCR_DETAIL = "high"
 SCENE_DETAIL = "low"
 MAX_IMAGES = 3
+DEFAULT_FRAME_COUNT = 3
 MAX_OUTPUT_TOKENS = 400
 MAX_DAILY_ITEMS = 20
 MIN_SPEECH_CHARS = 40
 MIN_OCR_CHARS = 12
+MIN_USEFUL_SCREEN_CHARS = 4
+# Optional density gate. Off unless vision.speech_thin is true.
+DEFAULT_MIN_CHARS_PER_SECOND = 1.5
+DEFAULT_MIN_THIN_DURATION = 8.0
+# ASR outcomes that mean "no usable speech", not "we refused to download".
+SILENT_VIDEO_STATUSES = frozenset({"failed", "unavailable"})
 _SPECIAL_TOKEN = re.compile(r"<\|[^|>]{0,80}\|>")
+# Empty model replies. These are not a note body.
+_USELESS_LINE = re.compile(
+    r"^(?:"
+    r"无|无字|无文字|没有字|没有文字|未识别|无法识别|看不清|不清晰|空白|无内容|"
+    r"无字幕|没有字幕|图中没有文字|画面没有文字|画面上没有文字|无法辨认|"
+    r"none|n/?a|null|empty|no text|no words"
+    r")[\s。．.!！,，、]*$",
+    re.IGNORECASE,
+)
 
 # Qwen detail=low bills a 448px square, about 256 input tokens.
 LOW_DETAIL_INPUT_TOKENS = 256
@@ -37,23 +53,129 @@ SCENE_INPUT_USD_PER_M = 0.20
 SCENE_OUTPUT_USD_PER_M = 0.60
 
 
-def vision_enabled(options: dict[str, Any] | None) -> bool:
+def _vision(options: dict[str, Any] | None) -> dict[str, Any]:
     vision = (options or {}).get("vision")
-    return isinstance(vision, dict) and vision.get("enabled") is True
+    return vision if isinstance(vision, dict) else {}
 
 
-def needs_screen_read(item: dict[str, Any]) -> bool:
-    """Only picture posts. A video cover is not the video."""
-    status = str(item.get("transcript_status") or "")
-    if status == "success" and len(str(item.get("transcript") or "").strip()) >= MIN_SPEECH_CHARS:
+def vision_enabled(options: dict[str, Any] | None) -> bool:
+    return _vision(options).get("enabled") is True
+
+
+def silent_video_enabled(options: dict[str, Any] | None) -> bool:
+    """Opt-in frame read for videos that have no usable speech. Default off."""
+    return _vision(options).get("silent_video") is True
+
+
+def speech_thin_enabled(options: dict[str, Any] | None) -> bool:
+    """Opt-in duration density. Default off, and it does not turn frames on."""
+    return _vision(options).get("speech_thin") is True
+
+
+def _positive_number(value: Any, default: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    number = float(value)
+    return number if number > 0 else default
+
+
+def speech_is_thin(
+    duration_seconds: float,
+    chars: int,
+    *,
+    min_chars_per_second: float = DEFAULT_MIN_CHARS_PER_SECOND,
+    min_duration: float = DEFAULT_MIN_THIN_DURATION,
+) -> bool:
+    """True when a long clip has too little speech for its length.
+
+    Clips shorter than ``min_duration`` are not thin. Missing duration is
+    not thin. This does not open frame reading by itself.
+    """
+    try:
+        duration = float(duration_seconds)
+    except (TypeError, ValueError):
         return False
-    return is_image_post(item) or status == "skipped_image"
+    if duration < min_duration:
+        return False
+    if chars <= 0:
+        return True
+    return (chars / duration) < min_chars_per_second
+
+
+def item_speech_is_thin(item: dict[str, Any], options: dict[str, Any] | None) -> bool:
+    if not speech_thin_enabled(options) or is_image_post(item):
+        return False
+    vision = _vision(options)
+    chars = len(str(item.get("transcript") or "").strip())
+    return speech_is_thin(
+        item.get("duration_seconds") or 0,
+        chars,
+        min_chars_per_second=_positive_number(vision.get("min_chars_per_second"), DEFAULT_MIN_CHARS_PER_SECOND),
+        min_duration=_positive_number(vision.get("min_thin_duration"), DEFAULT_MIN_THIN_DURATION),
+    )
+
+
+def video_frame_count(options: dict[str, Any] | None) -> int:
+    raw = _vision(options).get("frame_count", DEFAULT_FRAME_COUNT)
+    if isinstance(raw, bool):
+        return DEFAULT_FRAME_COUNT
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_FRAME_COUNT
+    return max(1, min(count, MAX_IMAGES))
+
+
+def lacks_usable_speech(item: dict[str, Any]) -> bool:
+    """True when ASR did not leave a transcript long enough to skip vision."""
+    status = str(item.get("transcript_status") or "")
+    transcript = str(item.get("transcript") or "").strip()
+    if status == "success" and len(transcript) >= MIN_SPEECH_CHARS:
+        return False
+    if status in SILENT_VIDEO_STATUSES:
+        return True
+    return status == "success" and len(transcript) < MIN_SPEECH_CHARS
+
+
+def needs_screen_read(item: dict[str, Any], options: dict[str, Any] | None = None) -> bool:
+    """Picture posts, plus silent videos only when ``vision.silent_video`` is on.
+
+    A video cover is not the video. The default stays off so an ASR failure
+    does not call vision. ``speech_thin`` can also treat a long clip with
+    very little speech as thin, but only together with ``silent_video``.
+    ``too_large``, ``budget_exceeded`` and ``not_requested`` stay out.
+    """
+    status = str(item.get("transcript_status") or "")
+    transcript = str(item.get("transcript") or "").strip()
+    long_speech = status == "success" and len(transcript) >= MIN_SPEECH_CHARS
+    thin_video = long_speech and item_speech_is_thin(item, options) and silent_video_enabled(options)
+    if long_speech and not thin_video:
+        return False
+    if is_image_post(item) or status == "skipped_image":
+        return not long_speech
+    if not silent_video_enabled(options):
+        return False
+    if thin_video:
+        return True
+    return lacks_usable_speech(item)
 
 
 def clean_ocr_text(text: str) -> str:
     """Drop PaddleOCR location tokens before judging whether the words are enough."""
     cleaned = _SPECIAL_TOKEN.sub("", text or "")
     return "\n".join(line.strip() for line in cleaned.splitlines() if line.strip()).strip()
+
+
+def is_useful_screen_text(text: str) -> bool:
+    """True when text is worth a note body, not an empty placeholder.
+
+    Picture posts do not use this gate. The silent-video path does, so a
+    model reply of 「无」 or 「没有文字」 is not saved as the transcript.
+    """
+    lines = [line.strip() for line in clean_ocr_text(text).splitlines() if line.strip()]
+    if not lines or all(_USELESS_LINE.match(line) for line in lines):
+        return False
+    return len("".join(lines)) >= MIN_USEFUL_SCREEN_CHARS
 
 
 def _image_urls(item: dict[str, Any]) -> list[str]:

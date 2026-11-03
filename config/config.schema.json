@@ -120,6 +120,39 @@
                 {"$ref": "#/$defs/disabledStage"},
                 {"$ref": "#/$defs/notificationStage"}
               ]
+            },
+            "topic_classify": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {"type": "boolean", "description": "Default false. Does not change media_kind."},
+                "mode": {"enum": ["suggest", "assign"], "description": "suggest writes topic_suggestions only. assign may write topic from taxonomy_file."},
+                "taxonomy_file": {"type": "string", "description": "User-supplied labels. Empty means no taxonomy. Not a built-in category list."}
+              }
+            },
+            "transcript_quality": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Speech gate. Default enabled false. lyric_conflict is ignored until enabled.",
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "min_chars": {"type": "integer", "minimum": 1},
+                "min_cjk_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                "max_fragment_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                "lyric_conflict": {"type": "boolean"},
+                "min_overlap": {"type": "number", "minimum": 0, "maximum": 1}
+              }
+            },
+            "batch_quality": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Batch warning only. Default enabled false. Does not reject notes. Does not use a category name as the metric.",
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "warn_only": {"type": "boolean"},
+                "max_missing_topic_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                "max_low_quality_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+              }
             }
           },
           "allOf": [

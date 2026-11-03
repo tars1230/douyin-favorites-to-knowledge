@@ -277,6 +277,11 @@ douyin-favorites-knowledge check-config
       "max_media_bytes": 536870912,
       "vision": {
         "enabled": false,
+        "silent_video": false,
+        "speech_thin": false,
+        "min_chars_per_second": 1.5,
+        "min_thin_duration": 8,
+        "frame_count": 3,
         "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
         "scene_model": "Qwen/Qwen3-VL-32B-Instruct",
         "max_daily_items": 20,
@@ -290,10 +295,91 @@ douyin-favorites-knowledge check-config
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `enabled` | `false` | 是否允许付费的场景识别模型；关闭时只跑免费 OCR |
+| `silent_video` | `false` | 是否对「没有可用口播」的视频抽帧认字。关闭时，视频转写失败不会去看画面 |
+| `speech_thin` | `false` | 是否把「时长很长、字很少」也当成口播稀薄。单独打开不会抽帧，必须同时打开 `silent_video` |
+| `min_chars_per_second` | `1.5` | 稀薄判断：每秒中文字数低于这个值才算稀 |
+| `min_thin_duration` | `8` | 短于这么多秒的视频不做稀薄判断 |
+| `frame_count` | `3` | 无口播视频最多抽几帧，上限 3。约每 4 秒一帧 |
 | `ocr_model` | `PaddlePaddle/PaddleOCR-VL-1.5` | 免费认字模型，负责读画面上的文字 |
 | `scene_model` | `Qwen/Qwen3-VL-32B-Instruct` | 付费模型，认字太少时看第一张图一次 |
 | `max_daily_items` | `20` | 付费调用的每日条数上限，超出仍保留免费 OCR 结果 |
 | `max_output_length` | `400` | 单次调用的输出上限（按模型 token 计） |
+
+#### 无口播视频（默认关闭）
+
+`silent_video` 默认 `false`，升级后不会给失败的视频额外扣费或打模型。设为 `true` 之后，只有这些视频会抽帧：转写状态是 `failed` 或 `unavailable`（包含空转写），或者状态是 `success` 但正文不足 40 字。口播已经够长的视频不抽帧。图文仍然走原来的图片地址，不看这个开关。
+
+什么时候再打开 `speech_thin`：一条视频很长，转写却只有几十个字，多半是标题、口气词或背景音乐，不是在讲事情。两个开关都为 `true` 时，时长至少 `min_thin_duration` 秒、并且每秒字数低于 `min_chars_per_second`，才会按无口播去抽帧。只开 `speech_thin`、不开 `silent_video`，仍然不抽帧。没有时长的条目不会被当成稀薄。
+
+抽帧在本机完成：下载播放地址，用 ffmpeg 取出最多 `frame_count` 张小图，再把图片发给硅基流动。整段视频不上传，抖音地址也不交给模型。没有 ffmpeg、或者切不出画面时，才退回封面图。封面往往不是正文，所以只做兜底。
+
+付费的 `Qwen/Qwen3-VL-32B-Instruct` 仍然要 `enabled=true`，并且算进每天的 `max_daily_items`。只想要免费认字时，打开 `silent_video`、保持 `enabled=false` 即可。
+
+下面这些情况**不会**写进笔记，条目保持原来的转写状态（转写开着时，失败条目仍然不入库）：
+
+- 没开 `silent_video`。
+- 没有 `SILICONFLOW_API_KEY`，没有可下的播放地址，ffmpeg 失败且没有封面。
+- 免费 OCR 是空话（例如「无」「没有文字」）或不足 4 个字，并且付费模型没开或也没写出有用的话。
+- `too_large`、`budget_exceeded`、`not_requested`。这些不是「口播为空」。
+
+`media_kind` 只区分图文和视频，用来决定走不走语音识别。它不是主题。
+
+#### 可选主题（默认关闭）
+
+收藏笔记可以选填主题，默认不做。配置：
+
+```json
+"topic_classify": {
+  "enabled": false,
+  "mode": "suggest",
+  "taxonomy_file": ""
+}
+```
+
+- `enabled: false`：什么都不写。
+- `mode: "suggest"`：只看这一条自己的标签、`#话题` 和【括号】，把短语写进 frontmatter 的 `topic_suggestions` 和笔记里的「主题建议」。不指定唯一主题。
+- `mode: "assign"`：再读 `taxonomy_file`。文件可以是 JSON 数组、`{"labels": ["你的分类"]}`，或一行一个名称的文本（`#` 开头是注释）。某个名称唯一地出现在标题、标签或正文里时，写入 `topic`。几个名称打成平手就只给建议，不硬选一个。
+- 示例文件 [config/taxonomy.example.json](config/taxonomy.example.json) 故意是空列表。把分类写成你自己的文件，不要指望包里带好一套分类。
+- 分类文件缺失、写坏，或一个名称都对不上：笔记照常保存，只是没有 `topic`。转写和画面认字不受影响。
+- 已经入库的笔记不会因为后来改了分类文件被重写。
+- 采集时会把简介里的 `#话题` 和【括号】写进 `tags`。没有这些记号的标题不会被当成标签。`suggest` 因此能用到采集标签；这仍然不是一套内置分类。
+
+#### 口播质量闸（默认关闭）
+
+```json
+"transcript_quality": {
+  "enabled": false,
+  "min_chars": 40,
+  "min_cjk_ratio": 0.5,
+  "max_fragment_ratio": 0.45,
+  "lyric_conflict": true,
+  "min_overlap": 0.15
+}
+```
+
+`enabled` 为 `false` 时不打分，成功的转写仍标成口播。打开之后：
+
+- 太短、中文占比低于 `min_cjk_ratio`，或碎句占比高于 `max_fragment_ratio`，记为 `low`。
+- 简介里有音乐标记（如 🎼、BGM、背景音乐、歌词），并且转写和简介几乎没有共同用词（低于 `min_overlap`），记为 `lyric_conflict`。这里没有歌名表。
+- `low`、`empty`、`lyric_conflict` 写入 frontmatter `transcript_quality`，笔记放在「未看懂」，不写成口播。画面层不受这道闸影响。
+- 关闸之后，已入库的分数会从笔记里读回，避免下一次同步把哈希对不上。
+
+英文口播会被默认的中文占比判成低质。不想用这条时把 `min_cjk_ratio` 设为 `0`。
+
+#### 笔记怎么分层
+
+新笔记按这个顺序写，旧笔记不会被重写：
+
+1. **口播**：转写成功，且没有被质量闸打成低质或歌词冲突。
+2. **画面上的字**：没有可用口播、画面认字有结果。
+3. **未看懂**：上面两层都没有。失败、图文未认字、或质量不够，都写在这里。
+4. **旁注 / 原始描述**：简介。旁边写明「这是简介，不是口播」。
+
+#### 批级提醒（默认关闭）
+
+`batch_quality.enabled` 默认 `false`。打开后，同步结果里可以警告两件事：缺 `topic` 的比例（只在主题分类也打开时计算），以及低质转写的比例。超过阈值只警告，不拒绝入库。计数只含简介、口播、画面，不含评论或私信。不用某个分类名当指标。
+
+Creator、Chat 各自的分类表与收藏笔记的主题互不相干。这个包不读取、也不覆盖它们。
 
 `max_output_length` 从 2.3.5 起使用。2.3.4 生成的配置里若写的是 `max_output_tokens`，请改名或删除。
 
@@ -380,12 +466,13 @@ douyin-favorites-knowledge logout
 
 ### 可选能力
 
-配置 v2 支持三个独立阶段：
+配置 v2 里，转录、分析和通知是三个独立阶段。主题是另一项可选配置，不占用这三阶段，也不改变 `media_kind`：
 
 | 阶段 | 可选来源 |
 |---|---|
 | 转录 | 内置百炼、内置本地 Whisper 或自定义 adapter |
 | 分析 | 本地模型、MiniMax 或其他 adapter |
+| 主题 | 默认关闭。`suggest` 只给建议；`assign` 只用你自己的分类文件。与 `media_kind`、Creator、Chat 的分类都不是一回事 |
 | 通知 | 飞书或其他 adapter |
 
 MiniMax 不是必需项，本地模型也不写死。不同电脑可以选择不同模型。具体能力通过 `module:function` adapter 接入；当前仓库不自动安装模型运行时、MiniMax 客户端或飞书机器人。分析默认关闭；启用后 adapter 返回 `{"analysis": {"content_summary": "…", "value_judgment": "…", "deep_analysis": "…", "extensions": "…", "action_items": "…", "related_knowledge": "…"}}`，非空字段才写入笔记。`tags` 仍可由 adapter 单独返回；不要把模型推理过程写入任一字段。

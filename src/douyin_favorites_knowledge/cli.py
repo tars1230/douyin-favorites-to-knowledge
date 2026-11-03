@@ -23,7 +23,18 @@ from .siliconflow import check_environment as check_siliconflow_environment
 from .siliconflow import transcribe as transcribe_with_siliconflow
 from .security import safe_error_message
 from .siliconflow_vision import read_screen
-from .vision_policy import vision_enabled
+from .topic_classify import classify_item, saved_topic_fields
+from .transcript_quality import assess_transcript, batch_report, layer_counts, saved_quality
+from .vision_policy import (
+    DEFAULT_FRAME_COUNT,
+    DEFAULT_MIN_CHARS_PER_SECOND,
+    DEFAULT_MIN_THIN_DURATION,
+    MAX_DAILY_ITEMS as VISION_MAX_DAILY_ITEMS,
+    MAX_OUTPUT_TOKENS,
+    OCR_MODEL,
+    SCENE_MODEL,
+    vision_enabled,
+)
 from .workflow import (
     atomic_write_json,
     atomic_write_text,
@@ -184,6 +195,15 @@ def _config_summary(config: Config) -> dict:
         "schema_version": config.raw["schema_version"],
         "mode": config.mode,
         "drift_policy": config.drift_policy,
+        "topic_classify": _topic_summary(config),
+        "transcript_quality": {
+            "enabled": (config.transcript_quality or {}).get("enabled") is True,
+            "lyric_conflict": (config.transcript_quality or {}).get("lyric_conflict", True) is not False,
+        },
+        "batch_quality": {
+            "enabled": (config.batch_quality or {}).get("enabled") is True,
+            "warn_only": (config.batch_quality or {}).get("warn_only", True) is not False,
+        },
         "stages": stages,
         **({"transcription_readiness": readiness} if readiness is not None else {}),
         **({"cloud_transcription_pricing": pricing} if pricing is not None else {}),
@@ -236,10 +256,15 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
         if provider == "siliconflow":
             options["vision"] = {
                 "enabled": False,
-                "ocr_model": "PaddlePaddle/PaddleOCR-VL-1.5",
-                "scene_model": "Qwen/Qwen3-VL-32B-Instruct",
-                "max_daily_items": 20,
-                "max_output_length": 400,
+                "silent_video": False,
+                "speech_thin": False,
+                "min_chars_per_second": DEFAULT_MIN_CHARS_PER_SECOND,
+                "min_thin_duration": DEFAULT_MIN_THIN_DURATION,
+                "frame_count": DEFAULT_FRAME_COUNT,
+                "ocr_model": OCR_MODEL,
+                "scene_model": SCENE_MODEL,
+                "max_daily_items": VISION_MAX_DAILY_ITEMS,
+                "max_output_length": MAX_OUTPUT_TOKENS,
             }
     else:
         options = {}
@@ -260,6 +285,21 @@ def _config_payload(config_path: Path, knowledge_dir: Path, transcription: str) 
         ),
         "analysis": {"enabled": False, "provider": "none"},
         "notification": {"enabled": False, "provider": "none"},
+        "topic_classify": {"enabled": False, "mode": "suggest", "taxonomy_file": ""},
+        "transcript_quality": {
+            "enabled": False,
+            "min_chars": 40,
+            "min_cjk_ratio": 0.5,
+            "max_fragment_ratio": 0.45,
+            "lyric_conflict": True,
+            "min_overlap": 0.15,
+        },
+        "batch_quality": {
+            "enabled": False,
+            "warn_only": True,
+            "max_missing_topic_ratio": 0.8,
+            "max_low_quality_ratio": 0.5,
+        },
     }
 
 
@@ -534,6 +574,7 @@ def _saved_screen_fields(note: str, description: str) -> dict[str, str] | None:
     marker = "### 原始描述\n\n"
     if marker in note:
         rest = note.split(marker, 1)[1]
+        rest = rest.split("\n\n这是简介，不是口播。", 1)[0]
         saved_description = re.split(r"\n\n(?=### |## )", rest, maxsplit=1)[0]
         if not _same_text(saved_description, description):
             return None
@@ -620,11 +661,120 @@ def _add_vision_paid(config: Config, count: int) -> None:
         )
 
 
+def _topic_summary(config: Config) -> dict[str, Any]:
+    settings = config.topic_classify or {}
+    summary: dict[str, Any] = {
+        "enabled": settings.get("enabled") is True,
+        "mode": settings.get("mode") or "suggest",
+    }
+    path = str(settings.get("taxonomy_file") or "")
+    if path:
+        summary["taxonomy_file"] = "present" if Path(path).is_file() else "missing"
+    return summary
+
+
+def _apply_topic_classify(raw_items: list[dict], config: Config) -> list[dict]:
+    """Label new items only. A classifier error does not drop the transcript."""
+    settings = config.topic_classify or {}
+    if settings.get("enabled") is not True:
+        return raw_items
+    known = _known_aweme_ids(config)
+    updated = []
+    for item in raw_items:
+        if str(item.get("aweme_id") or "") in known:
+            updated.append(item)
+            continue
+        try:
+            extra = classify_item(item, settings)
+        except Exception:
+            extra = {}
+        updated.append({**item, **extra} if extra else item)
+    return updated
+
+
+def _restore_saved_topic(raw_items: list[dict], config: Config) -> list[dict]:
+    """Keep a promoted topic in the hash after classification is turned off."""
+    known = _known_aweme_ids(config)
+    restored = []
+    for item in raw_items:
+        aweme_id = str(item.get("aweme_id") or "")
+        if aweme_id not in known:
+            restored.append(item)
+            continue
+        path = config.knowledge_dir / f"{item.get('source') or 'collection'}-{aweme_id}.md"
+        try:
+            note = path.read_text(encoding="utf-8")
+        except OSError:
+            restored.append(item)
+            continue
+        fields = saved_topic_fields(note)
+        if not fields:
+            restored.append(item)
+            continue
+        merged = {key: value for key, value in item.items() if key not in {"topic", "topic_suggestions"}}
+        restored.append({**merged, **fields})
+    return restored
+
+
+def _apply_transcript_quality(raw_items: list[dict], config: Config) -> list[dict]:
+    """Score new speech only. A scorer error does not drop the transcript."""
+    settings = config.transcript_quality or {}
+    if settings.get("enabled") is not True:
+        return raw_items
+    known = _known_aweme_ids(config)
+    updated = []
+    for item in raw_items:
+        if str(item.get("aweme_id") or "") in known:
+            updated.append(item)
+            continue
+        try:
+            extra = assess_transcript(item, settings)
+        except Exception:
+            extra = {}
+        updated.append({**item, **extra} if extra else item)
+    return updated
+
+
+def _restore_saved_quality(raw_items: list[dict], config: Config) -> list[dict]:
+    """Keep a promoted score in the hash after the gate is turned off."""
+    known = _known_aweme_ids(config)
+    restored = []
+    for item in raw_items:
+        aweme_id = str(item.get("aweme_id") or "")
+        if aweme_id not in known:
+            restored.append(item)
+            continue
+        path = config.knowledge_dir / f"{item.get('source') or 'collection'}-{aweme_id}.md"
+        try:
+            note = path.read_text(encoding="utf-8")
+        except OSError:
+            restored.append(item)
+            continue
+        fields = saved_quality(note)
+        if not fields:
+            restored.append(item)
+            continue
+        merged = {key: value for key, value in item.items() if key != "transcript_quality"}
+        restored.append({**merged, **fields})
+    return restored
+
+
+def _finish_understanding(raw_items: list[dict], config: Config) -> list[dict]:
+    raw_items = _apply_screen_read(raw_items, config)
+    raw_items = _restore_saved_screen_text(raw_items, config)
+    raw_items = _apply_transcript_quality(raw_items, config)
+    raw_items = _restore_saved_quality(raw_items, config)
+    raw_items = _apply_topic_classify(raw_items, config)
+    return _restore_saved_topic(raw_items, config)
+
+
 def _apply_screen_read(raw_items: list[dict], config: Config) -> list[dict]:
-    """Read picture posts with the free SiliconFlow OCR model.
+    """Read picture posts, and silent videos when that switch is on.
 
     The paid scene model stays off unless vision.enabled is true, so an
     upgrade does not start a bill. Already saved items are not rewritten.
+    ``vision.silent_video`` defaults off: a failed video transcript still
+    skips vision until the operator opts in.
     """
     if config.transcription.provider != "siliconflow":
         return raw_items
@@ -694,6 +844,11 @@ def _write_daily_report(config: Config, source: str, report_date: date, items: l
             lines.append(f"- [[{note_name}|{item['title']}]]{author} ([原链接]({item['source_url']}))")
     else:
         lines.append("今日没有新增条目。")
+    counts = layer_counts(items)
+    lines.extend([
+        "",
+        f"看懂分层：简介 {counts['caption']}，口播 {counts['speech']}，画面 {counts['screen']}。",
+    ])
     lines.append("")
     suffix = "收藏" if source == "collection" else "喜欢"
     atomic_write_text(config.knowledge_dir / "日报" / f"{report_date.isoformat()}-{suffix}日报.md", "\n".join(lines))
@@ -717,6 +872,20 @@ def _retryable_report(items: list[dict]) -> dict:
             f"{reason}×{times}" for reason, times in sorted(reasons.items())
         )
     return report
+
+
+def _attach_batch_summary(summary: dict, config: Config, items: list[dict]) -> dict:
+    """Add layer counts and an optional warning. Does not block promotion."""
+    if items:
+        summary["understanding"] = layer_counts(items)
+    report = batch_report(
+        items,
+        config.batch_quality,
+        topic_enabled=(config.topic_classify or {}).get("enabled") is True,
+    )
+    if report:
+        summary["batch_quality"] = report
+    return summary
 
 
 def _sync(args: argparse.Namespace, config: Config, report_date: date | None = None) -> int:
@@ -749,8 +918,7 @@ def _sync_collected(args: argparse.Namespace, config: Config, report_date: date 
     if mismatched:
         raise ValueError(f"collector returned items outside requested source: {args.source}")
     raw_items = _apply_configured_stages(list(raw_items), config)
-    raw_items = _apply_screen_read(raw_items, config)
-    raw_items = _restore_saved_screen_text(raw_items, config)
+    raw_items = _finish_understanding(raw_items, config)
     report = _retryable_report(raw_items)
     retryable_count = report["retryable_count"]
     if config.transcription.enabled:
@@ -793,6 +961,7 @@ def _sync_collected(args: argparse.Namespace, config: Config, report_date: date 
             else {}
         )
         summary = {"status": status, **retryable, **drift_report}
+        _attach_batch_summary(summary, config, [])
         if report_date:
             _write_daily_report(config, args.source, report_date, [])
             summary["daily_report"] = "written"
@@ -804,7 +973,11 @@ def _sync_collected(args: argparse.Namespace, config: Config, report_date: date 
             {"aweme_id": item["aweme_id"], "title": item["title"][:120]}
             for item in candidates[:20]
         ]
-        _print({"status": "dry_run", **manifest["summary"], "preview": preview})
+        _print(_attach_batch_summary(
+            {"status": "dry_run", **manifest["summary"], "preview": preview},
+            config,
+            candidates,
+        ))
         return 0
 
     runtime_dir = config.ledger_path.parent / "sync"
@@ -839,6 +1012,7 @@ def _sync_collected(args: argparse.Namespace, config: Config, report_date: date 
             [item for item in candidates if item["aweme_id"] in promoted_ids],
         )
         summary["daily_report"] = "written"
+    _attach_batch_summary(summary, config, candidates)
     _print(summary)
     return 0
 
@@ -898,8 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 default_source_label = f"authorized_browser:{args.source}"
             raw_items = _apply_configured_stages(list(raw_items), config)
-            raw_items = _apply_screen_read(raw_items, config)
-            raw_items = _restore_saved_screen_text(raw_items, config)
+            raw_items = _finish_understanding(raw_items, config)
             if args.enricher:
                 raw_items = _apply_enricher(raw_items, args.enricher, dict(config.raw))
             manifest = build_review(

@@ -14,5 +14,24 @@
   "notification": {
     "enabled": false,
     "provider": "none"
+  },
+  "topic_classify": {
+    "enabled": false,
+    "mode": "suggest",
+    "taxonomy_file": ""
+  },
+  "transcript_quality": {
+    "enabled": false,
+    "min_chars": 40,
+    "min_cjk_ratio": 0.5,
+    "max_fragment_ratio": 0.45,
+    "lyric_conflict": true,
+    "min_overlap": 0.15
+  },
+  "batch_quality": {
+    "enabled": false,
+    "warn_only": true,
+    "max_missing_topic_ratio": 0.8,
+    "max_low_quality_ratio": 0.5
   }
 }

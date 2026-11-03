@@ -11,6 +11,7 @@ from pathlib import Path
 from douyin_favorites_knowledge import config
 from douyin_favorites_knowledge.cli import _config_payload
 from douyin_favorites_knowledge.vision_policy import (
+    DEFAULT_FRAME_COUNT,
     MAX_DAILY_ITEMS,
     MAX_OUTPUT_TOKENS,
     OCR_MODEL,
@@ -81,6 +82,15 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertEqual(vision["scene_model"], SCENE_MODEL)
         self.assertEqual(vision["max_daily_items"], MAX_DAILY_ITEMS)
         self.assertEqual(vision["max_output_length"], MAX_OUTPUT_TOKENS)
+        self.assertIs(vision["silent_video"], False)
+        self.assertIs(vision["speech_thin"], False)
+        self.assertEqual(vision["frame_count"], DEFAULT_FRAME_COUNT)
+        self.assertIs(payload["transcript_quality"]["enabled"], False)
+        self.assertIs(payload["batch_quality"]["enabled"], False)
+        self.assertIs(payload["batch_quality"]["warn_only"], True)
+        self.assertIs(payload["topic_classify"]["enabled"], False)
+        self.assertEqual(payload["topic_classify"]["mode"], "suggest")
+        self.assertEqual(payload["topic_classify"]["taxonomy_file"], "")
 
     def test_setup_siliconflow_config_loads(self):
         with tempfile.TemporaryDirectory() as tmp:
