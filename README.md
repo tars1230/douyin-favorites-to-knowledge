@@ -1,5 +1,9 @@
 # 抖音收藏转本地知识库
 
+<!-- yarkr:badges:start -->
+[![Indexed on Yarkr](https://api.yarkr.com/functions/v1/api/api/v1/badges/repos/tars1230/douyin-favorites-to-knowledge/version.svg)](https://yarkr.com/arks/tars1230/douyin-favorites-to-knowledge)
+<!-- yarkr:badges:end -->
+
 刷到有用的视频就收藏。需要整理时运行一次同步，新收藏会变成可搜索的本地 Markdown 笔记。默认采集**收藏**；用户明确说“喜欢/点赞”时才采集喜欢列表，二者绝不混用。
 
 [![CI](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml/badge.svg)](https://github.com/tars1230/douyin-favorites-to-knowledge/actions/workflows/ci.yml)
@@ -466,3 +470,34 @@ python -m pip uninstall douyin-favorites-to-knowledge
 - 环境变量：`DOUYIN_ASR_AUDIO_BITRATE`（默认 `64k`）、`DOUYIN_ASR_SAMPLE_RATE`（默认 `16000`）。
 - 网络下载阶段可能是视频体积；上传给 SenseVoice 的是抽好的小音频。
 
+<!-- yarkr:install:start -->
+## Install with Yarkr
+
+This repo is indexed on [Yarkr](https://yarkr.com/arks/tars1230/douyin-favorites-to-knowledge) as the ark [tars1230/douyin-favorites-to-knowledge](https://yarkr.com/arks/tars1230/douyin-favorites-to-knowledge), so its skills install into Claude Code, Codex, Cursor and other agent harnesses with one command.
+
+### CLI
+
+Install the whole ark, which Yarkr keeps equal to this repo:
+
+```bash
+npx yarkr-cli sync tars1230/douyin-favorites-to-knowledge
+```
+
+Or add individual skills:
+
+```bash
+npx yarkr-cli add skill:tars1230/douyin-favorites-to-knowledge/douyin-favorites-to-knowledge
+```
+
+No Node.js? `curl -fsSL https://yarkr.com/install.sh | sh` (macOS, Linux) or `irm https://yarkr.com/install.ps1 | iex` (Windows PowerShell) installs `yarkr` as a standalone binary; then type `yarkr` in place of `npx yarkr-cli`.
+
+### MCP
+
+Connect your agent to the ark over MCP:
+
+```bash
+npx yarkr-cli mcp add tars1230/douyin-favorites-to-knowledge
+```
+
+Or point any MCP client at `https://api.yarkr.com/functions/v1/api/mcp/o/tars1230/douyin-favorites-to-knowledge`.
+<!-- yarkr:install:end -->
